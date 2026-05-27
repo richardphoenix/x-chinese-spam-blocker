@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.5.0
+// @version      0.6.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -21,6 +21,7 @@
 // @connect      raw.githubusercontent.com
 // @connect      api.x.com
 // @connect      x.com
+// @connect      vercel.app
 // @run-at       document-end
 // ==/UserScript==
 
@@ -63,6 +64,9 @@
 
     // UI
     PANEL_Z_INDEX: 999999,
+
+    // Backend submission API. Update to the deployed domain after first deploy.
+    SUBMIT_API: 'https://x-chinese-spam-blocker.vercel.app/api/submit',
   };
 
   // ===================== STATE =====================
@@ -534,37 +538,47 @@
     const visibleSpam = document.querySelector('article[data-testid="tweet"][data-spam-hidden="true"]') ||
                         document.querySelector('div[data-testid="UserCell"][data-spam-hidden="true"]');
 
-    let userId = '';
-    let screenName = '';
-    let displayName = '';
-    let tweetText = '';
-
-    if (visibleSpam) {
-      const info = extractUserInfo(visibleSpam);
-      if (info) {
-        userId = info.userId || '';
-        screenName = info.screenName || '';
-        displayName = info.displayName || '';
-        tweetText = info.tweetText || '';
-      }
+    if (!visibleSpam) {
+      alert('未找到当前页面已识别的 spam，请先让脚本隐藏到 spam 后再提交。');
+      return;
     }
 
-    const score = visibleSpam ? calculateSpamScore(extractUserInfo(visibleSpam)) : 'N/A';
+    const info = extractUserInfo(visibleSpam);
+    if (!info || !info.userId) {
+      alert('无法获取该账号的 user_id，暂时无法提交。');
+      return;
+    }
 
-    const title = encodeURIComponent(`[Spam Submission] ${screenName ? '@' + screenName : 'Unknown Account'}`);
-    let body = `**账号信息**\n`;
-    body += `- User ID: \`${userId || '请手动填写'}\`\n`;
-    body += `- Screen Name: ${screenName ? '@' + screenName : '请手动填写'}\n`;
-    body += `- Display Name: ${displayName || '请手动填写'}\n\n`;
-    body += `**推文内容**:\n> ${tweetText || '（无文字内容）'}\n\n`;
-    body += `**检测分数**: ${score}\n`;
-    body += `**提交页面**: ${window.location.href}\n`;
-    body += `**提交时间**: ${new Date().toISOString()}\n\n`;
-    body += `**为什么你是 spam？**\n（请补充证据或说明，例如：大量相同模板、句柄特征、引流话术等）\n\n`;
-    body += `**证据截图**：\n请直接拖拽上传截图`;
+    const payload = {
+      user_id: String(info.userId),
+      screen_name: info.screenName || '',
+      display_name: info.displayName || '',
+      tweet_text: info.tweetText || '',
+      source_url: window.location.href,
+      detected_reasons: ['userscript-report'],
+      detected_score: calculateSpamScore(info),
+    };
 
-    const url = `https://github.com/richardphoenix/x-chinese-spam-blocker/issues/new?title=${title}&body=${encodeURIComponent(body)}`;
-    window.open(url, '_blank');
+    updatePanelStatus('正在提交到审核队列...');
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: CONFIG.SUBMIT_API,
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify(payload),
+      onload: (res) => {
+        try {
+          const data = JSON.parse(res.responseText);
+          updatePanelStatus(data.message || '已提交，等待审核');
+        } catch {
+          updatePanelStatus(res.status === 200 ? '已提交，等待审核' : '提交失败');
+        }
+        setTimeout(() => updatePanelStatus('就绪'), 4000);
+      },
+      onerror: () => {
+        updatePanelStatus('提交失败，请稍后重试');
+        setTimeout(() => updatePanelStatus('就绪'), 4000);
+      },
+    });
   }
 
   // ===================== UI PANEL =====================
@@ -628,7 +642,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.5</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
