@@ -6,25 +6,26 @@
 
 ## 目录结构
 
-- `pending.json`：当前等待审核的提交（由脚本自动生成 Issue 后，维护者可手动整理到这里或直接处理）
+- `pending.json`：遗留占位文件，已由后台数据库取代（见下文），不再实际使用
 - `approved/`：已通过审核并合并到正式黑名单的记录（可选归档）
 - `rejected/`：已拒绝的提交（可选归档）
 
 ## 提交来源
 
-目前主要通过脚本内的「提交到黑名单数据库」按钮提交。
+目前通过脚本内的「提交此账号到黑名单」按钮提交。
 
-提交时会自动打开 GitHub Issue，格式如下：
+点击按钮后，脚本会将以下字段 POST 到后台 API（`/api/submit`）：
 
-**Issue Title**: `[Spam Submission] @screen_name (user_id)`
+- `user_id`
+- `screen_name`
+- `display_name`
+- `tweet_text`（触发检测的推文内容）
+- `source_url`（提交时所在的页面链接）
+- `detected_score`（脚本检测分）
 
-**Issue Body** 包含：
-- user_id
-- screen_name
-- display_name
-- 提交时所在的页面链接
-- 检测到的特征（关键词、句柄特征等）
-- 提交时间
+提交成功后页面弹出 toast 提示，不跳转离开页面。同一账号（按 `user_id` 去重）被多次提交时，不会新建记录，而是累加票数（`votes`）。
+
+所有提交落入 Neon Postgres `submissions` 表，初始 `status=pending`，等待维护者在管理后台审核。
 
 ## 审核标准（维护者参考）
 
@@ -32,22 +33,24 @@
 - 明显使用批量注册的句柄格式（英文 + 大量数字）
 - 使用固定模板话术（寻固炮、小狗求抱抱、想找会疼人的哥哥等）
 - 头像为低质/盗用/性感真人照 + 低互动
-- 多次被不同用户举报
+- 多次被不同用户举报（票数较高）
 
 **建议拒绝的情况**：
 - 只有单一关键词命中，互动正常
 - 明显是真实用户（有正常发帖记录、粉丝互动）
 - 句柄正常，无明显批量特征
 
-## 合并流程
+## 审核流程
 
-1. 收到 Issue 后，检查账号真实性（可手动访问 X 查看）
-2. 确认后，将账号信息添加到 `blocklist/blocklist.json`
-3. 在 Issue 中回复「已合并」并关闭 Issue
-4. 可选：将提交记录移动到 `submissions/approved/`
+1. 维护者通过 GitHub OAuth 登录管理后台（`/admin`）
+2. pending 列表按票数降序排列，逐条查看账号信息、来源链接和检测分
+3. 确认后填写 `category` / `reason` / `evidence`，点击「通过」
+4. 后台自动将该账号 commit 写入 `blocklist/blocklist.json`（以维护者 GitHub 身份提交）
+5. Neon 中该记录状态更新为 `approved`
+6. 不符合条件的点击「拒绝」，记录置 `status=rejected` 并从 pending 队列隐藏，留痕但不重复出现
 
 ## 注意事项
 
-- 所有社区提交默认进入「待审核」状态
-- 正式黑名单（`blocklist.json`）只包含维护者确认过的账号
+- 所有社区提交默认进入「待审核」状态，存于后台数据库
+- 正式黑名单（`blocklist.json`）只包含维护者确认过的账号，由后台审核通过后自动 commit
 - 脚本的**批量拉黑功能**只针对 `blocklist.json` 中的账号生效，防止误杀
