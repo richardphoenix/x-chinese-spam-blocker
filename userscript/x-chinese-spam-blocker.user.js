@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.6.2
+// @version      0.6.3
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -84,7 +84,7 @@
   let blockingPaused = false;
 
   // Local whitelist (persistent via GM storage) - highest priority to prevent false positives
-  let localWhitelist = new Set(); // user_ids stored locally by the user
+  let localWhitelist = new Set(); // screen_names (lowercased) stored locally by the user
 
   // ===================== UTILITIES =====================
 
@@ -242,7 +242,7 @@
     const uid = String(userInfo.userId || '');
 
     // 0. Local whitelist has highest priority (never hide or block these)
-    if (isWhitelisted(uid)) {
+    if (isWhitelisted(userInfo.screenName)) {
       return false;
     }
 
@@ -269,8 +269,8 @@
 
     // Capture handle before collapsing the content
     const info = extractUserInfo(element);
-    const handle = info && info.screenName ? '@' + info.screenName : 'spam';
-    const userId = info ? info.userId : null;
+    const screenName = info ? info.screenName : null;
+    const handle = screenName ? '@' + screenName : 'spam';
 
     element.dataset.spamHidden = 'true';
 
@@ -309,12 +309,14 @@
     whitelistBtn.style.cssText = 'color:#1d9bf0;cursor:pointer;margin-left:auto;';
     whitelistBtn.onclick = async (e) => {
       e.stopImmediatePropagation();
-      if (userId) {
-        await addToLocalWhitelist(userId, info.screenName);
-        originalChildren.forEach(c => { c.style.display = ''; });
-        bar.remove();
-        updatePanelCount();
+      if (!screenName) {
+        alert('无法获取该账号的句柄，暂时无法加白名单。');
+        return;
       }
+      await addToLocalWhitelist(screenName);
+      originalChildren.forEach(c => { c.style.display = ''; });
+      bar.remove();
+      updatePanelCount();
     };
 
     bar.appendChild(text);
@@ -417,18 +419,21 @@
     await GM_setValue('local_whitelist', Array.from(localWhitelist));
   }
 
-  async function addToLocalWhitelist(userId, screenName = '') {
-    if (!userId) return false;
-    localWhitelist.add(String(userId));
+  // Whitelist is keyed on screen_name (lowercased), because X does NOT expose
+  // a stable user_id on timeline tweet/cell elements — the handle is what we
+  // can reliably extract from the profile link.
+  async function addToLocalWhitelist(screenName) {
+    if (!screenName) return false;
+    localWhitelist.add(String(screenName).toLowerCase());
     await saveLocalWhitelist();
-    log(`Added ${userId} to local whitelist`);
+    log(`Added @${screenName} to local whitelist`);
     return true;
   }
 
   // Check if an account is whitelisted (local > everything)
-  function isWhitelisted(userId, screenName = '') {
-    if (!userId) return false;
-    return localWhitelist.has(String(userId));
+  function isWhitelisted(screenName) {
+    if (!screenName) return false;
+    return localWhitelist.has(String(screenName).toLowerCase());
   }
 
   // ===================== NEW ADVANCED BLOCKING SYSTEM =====================
@@ -657,7 +662,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6.2</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6.3</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
