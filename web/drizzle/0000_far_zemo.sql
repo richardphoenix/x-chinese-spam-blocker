@@ -1,0 +1,20 @@
+CREATE TABLE "submissions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" text NOT NULL,
+	"screen_name" text DEFAULT '' NOT NULL,
+	"display_name" text DEFAULT '' NOT NULL,
+	"tweet_text" text DEFAULT '' NOT NULL,
+	"source_url" text DEFAULT '' NOT NULL,
+	"detected_reasons" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"detected_score" integer DEFAULT 0 NOT NULL,
+	"votes" integer DEFAULT 1 NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"category" text,
+	"reason" text,
+	"evidence" text,
+	"review_notes" text,
+	"first_submitted_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_submitted_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"reviewed_at" timestamp with time zone,
+	CONSTRAINT "submissions_user_id_unique" UNIQUE("user_id")
+);
