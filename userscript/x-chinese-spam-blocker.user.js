@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.6.0
+// @version      0.6.1
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -273,39 +273,60 @@
   function hideElement(element) {
     if (!element || element.dataset.spamHidden === 'true') return;
 
-    element.style.transition = 'opacity 0.2s ease';
-    element.style.opacity = '0.05';
-    element.style.pointerEvents = 'none';
+    // Capture handle before collapsing the content
+    const info = extractUserInfo(element);
+    const handle = info && info.screenName ? '@' + info.screenName : 'spam';
+    const userId = info ? info.userId : null;
+
     element.dataset.spamHidden = 'true';
+
+    // Collapse: hide the original content, leave only a thin bar
+    const originalChildren = Array.from(element.children);
+    originalChildren.forEach(c => { c.style.display = 'none'; });
 
     hiddenThisSession++;
     updateHiddenCount();
 
-    // Label
-    const label = document.createElement('div');
-    label.textContent = '已隐藏：spam';
-    label.style.cssText = 'position:absolute;right:8px;top:8px;font-size:10px;color:#f4212e;background:rgba(0,0,0,0.6);padding:2px 6px;border-radius:4px;';
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:12px;color:#8899a6;border-bottom:1px solid #2f3336;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
 
-    // Quick "Add to local whitelist" button on the hidden item (great for false positive recovery)
-    const whitelistBtn = document.createElement('div');
-    whitelistBtn.textContent = '误杀 → 加白名单';
-    whitelistBtn.style.cssText = 'position:absolute;right:8px;bottom:6px;font-size:9px;color:#1d9bf0;background:rgba(0,0,0,0.5);padding:1px 5px;border-radius:3px;cursor:pointer;';
+    // "已隐藏 @handle" — built via textContent to avoid any HTML injection
+    const text = document.createElement('span');
+    const tag = document.createElement('span');
+    tag.textContent = '已隐藏';
+    tag.style.cssText = 'color:#f4212e;font-weight:600;';
+    text.appendChild(tag);
+    text.appendChild(document.createTextNode(' ' + handle));
+
+    // Toggle the original content in place (展开 / 收起)
+    const showBtn = document.createElement('span');
+    showBtn.textContent = '显示';
+    showBtn.style.cssText = 'color:#1d9bf0;cursor:pointer;';
+    showBtn.onclick = (e) => {
+      e.stopImmediatePropagation();
+      const expanded = originalChildren[0] && originalChildren[0].style.display !== 'none';
+      originalChildren.forEach(c => { c.style.display = expanded ? 'none' : ''; });
+      showBtn.textContent = expanded ? '显示' : '收起';
+    };
+
+    // False-positive recovery: whitelist + reveal permanently
+    const whitelistBtn = document.createElement('span');
+    whitelistBtn.textContent = '误杀→加白名单';
+    whitelistBtn.style.cssText = 'color:#1d9bf0;cursor:pointer;margin-left:auto;';
     whitelistBtn.onclick = async (e) => {
       e.stopImmediatePropagation();
-      const info = extractUserInfo(element);
-      if (info && info.userId) {
-        await addToLocalWhitelist(info.userId, info.screenName);
-        element.style.opacity = '1';
-        element.style.pointerEvents = 'auto';
-        whitelistBtn.remove();
-        label.textContent = '已加入本地白名单';
+      if (userId) {
+        await addToLocalWhitelist(userId, info.screenName);
+        originalChildren.forEach(c => { c.style.display = ''; });
+        bar.remove();
         updatePanelCount();
       }
     };
 
-    element.style.position = 'relative';
-    element.appendChild(label);
-    element.appendChild(whitelistBtn);
+    bar.appendChild(text);
+    bar.appendChild(showBtn);
+    bar.appendChild(whitelistBtn);
+    element.insertBefore(bar, element.firstChild);
   }
 
   function updateHiddenCount() {
@@ -642,7 +663,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6.1</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
