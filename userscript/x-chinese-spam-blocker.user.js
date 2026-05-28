@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.9.2
+// @version      0.9.3
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -560,6 +560,17 @@
         box.appendChild(p);
         return;
       }
+
+      // Submit-all shortcut right inside the reviewer.
+      const submitAllBtn = document.createElement('button');
+      submitAllBtn.textContent = `提交全部 ${hiddenItems.length} 个到审核队列`;
+      submitAllBtn.style.cssText = 'width:100%;margin-bottom:10px;background:#1d9bf0;color:#fff;border:none;border-radius:9999px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;';
+      submitAllBtn.onclick = () => {
+        closeListModal();
+        submitAllHidden();
+      };
+      box.appendChild(submitAllBtn);
+
       hiddenItems.slice().forEach((item) => {
         const row = document.createElement('div');
         row.style.cssText = 'padding:8px 0;border-bottom:1px solid #2f3336;';
@@ -861,7 +872,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.2</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.3</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
