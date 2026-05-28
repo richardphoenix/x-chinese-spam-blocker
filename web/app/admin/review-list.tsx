@@ -2,7 +2,6 @@
 
 import { useState, useTransition } from "react";
 import type { Submission } from "@/lib/db/schema";
-import { Button } from "@/components/ui/button";
 import { SubmissionRow } from "./submission-row";
 import { approveBatch, rejectBatch } from "./actions";
 
@@ -34,48 +33,52 @@ export function ReviewList({ submissions }: { submissions: Submission[] }) {
     });
   }
 
-  return (
-    <div>
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          background: "#15202b",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "10px 0",
-          marginBottom: 8,
-          borderBottom: "1px solid #38444d",
-          zIndex: 1,
-        }}
-      >
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
-          <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-          全选
-        </label>
-        <Button disabled={selected.size === 0 || pending} onClick={() => runBatch(approveBatch)}>
-          通过选中 ({selected.size})
-        </Button>
-        <Button
-          variant="secondary"
-          disabled={selected.size === 0 || pending}
-          onClick={() => runBatch(rejectBatch)}
-        >
-          拒绝选中 ({selected.size})
-        </Button>
-        {pending ? <span style={{ fontSize: 13, color: "#8899a6" }}>处理中…</span> : null}
-      </div>
+  const count = selected.size;
 
-      {submissions.map((sub) => (
-        <div key={sub.id} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+  return (
+    <div className="space-y-2.5">
+      <div className="sticky top-[58px] z-10 flex items-center gap-2 rounded-xl border border-white/8 bg-[#0a0c10]/90 px-3 py-2 backdrop-blur-md">
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
           <input
             type="checkbox"
+            className="size-4 accent-amber-400"
+            checked={allSelected}
+            onChange={toggleAll}
+          />
+          全选
+        </label>
+        {pending ? <span className="text-xs text-zinc-500">处理中…</span> : null}
+        <button
+          type="button"
+          disabled={count === 0 || pending}
+          onClick={() => runBatch(approveBatch)}
+          className="ml-auto rounded-lg bg-emerald-500/90 px-3 py-1.5 text-sm font-medium text-emerald-950 transition hover:bg-emerald-400 disabled:opacity-40"
+        >
+          通过选中{count ? ` ${count}` : ""}
+        </button>
+        <button
+          type="button"
+          disabled={count === 0 || pending}
+          onClick={() => runBatch(rejectBatch)}
+          className="rounded-lg border border-rose-500/40 px-3 py-1.5 text-sm font-medium text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+        >
+          拒绝选中{count ? ` ${count}` : ""}
+        </button>
+      </div>
+
+      {submissions.map((sub, i) => (
+        <div
+          key={sub.id}
+          className="reveal flex items-start gap-2.5"
+          style={{ animationDelay: `${Math.min(i * 35, 350)}ms` }}
+        >
+          <input
+            type="checkbox"
+            className="mt-4 size-4 shrink-0 accent-amber-400"
             checked={selected.has(sub.id)}
             onChange={() => toggle(sub.id)}
-            style={{ marginTop: 18 }}
           />
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="min-w-0 flex-1">
             <SubmissionRow sub={sub} />
           </div>
         </div>

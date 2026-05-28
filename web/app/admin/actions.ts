@@ -9,7 +9,7 @@ import {
   markRejected,
   markRejectedMany,
 } from "@/lib/db/submissions";
-import { commitApprovedEntry, commitApprovedEntries } from "@/lib/github";
+import { commitApprovedEntry, commitApprovedEntries, saveKeywords } from "@/lib/github";
 
 const DEFAULT_CATEGORY = "寻固炮";
 const DEFAULT_REASON = "寻固炮 spam / 引流诈骗";
@@ -90,4 +90,12 @@ export async function rejectBatch(ids: string[]) {
   if (!session) throw new Error("未授权");
   await markRejectedMany(ids);
   revalidatePath("/admin");
+}
+
+export async function saveKeywordsAction(content: string) {
+  const session = await auth();
+  const accessToken = (session as { accessToken?: string } | null)?.accessToken;
+  if (!session || !accessToken) throw new Error("未授权");
+  await saveKeywords(accessToken, content);
+  revalidatePath("/admin/keywords");
 }

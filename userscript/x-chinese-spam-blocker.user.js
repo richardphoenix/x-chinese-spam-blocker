@@ -7,7 +7,7 @@
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
 // @description:zh-CN 自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
-// @author       Richard + Grok
+// @author       Richard + Claude
 // @license      MIT
 // @match        *://x.com/*
 // @match        *://twitter.com/*

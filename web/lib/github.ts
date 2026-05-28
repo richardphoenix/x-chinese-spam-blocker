@@ -7,6 +7,8 @@ import {
   type ReviewInput,
 } from "@/lib/blocklist";
 
+const KEYWORDS_PATH = "blocklist/spam-keywords.txt";
+
 type FileState = { list: BlocklistEntry[]; sha: string };
 
 async function readBlocklist(octokit: Octokit): Promise<FileState> {
@@ -48,6 +50,50 @@ export async function commitApprovedEntry(
     sha,
   });
   return "added";
+}
+
+export async function countBlocklistEntries(accessToken: string): Promise<number> {
+  const octokit = new Octokit({ auth: accessToken });
+  const { list } = await readBlocklist(octokit);
+  return list.length;
+}
+
+// Read the raw spam-keywords.txt content (preserving comments/grouping).
+export async function readKeywords(accessToken: string): Promise<string> {
+  const octokit = new Octokit({ auth: accessToken });
+  const res = await octokit.rest.repos.getContent({
+    owner: env.GITHUB_REPO_OWNER,
+    repo: env.GITHUB_REPO_NAME,
+    path: KEYWORDS_PATH,
+    ref: env.GITHUB_BRANCH,
+  });
+  if (Array.isArray(res.data) || res.data.type !== "file") {
+    throw new Error("keywords path is not a file");
+  }
+  return Buffer.from(res.data.content, "base64").toString("utf-8");
+}
+
+// Commit new spam-keywords.txt content as the maintainer.
+export async function saveKeywords(accessToken: string, content: string): Promise<void> {
+  const octokit = new Octokit({ auth: accessToken });
+  const current = await octokit.rest.repos.getContent({
+    owner: env.GITHUB_REPO_OWNER,
+    repo: env.GITHUB_REPO_NAME,
+    path: KEYWORDS_PATH,
+    ref: env.GITHUB_BRANCH,
+  });
+  if (Array.isArray(current.data) || current.data.type !== "file") {
+    throw new Error("keywords path is not a file");
+  }
+  await octokit.rest.repos.createOrUpdateFileContents({
+    owner: env.GITHUB_REPO_OWNER,
+    repo: env.GITHUB_REPO_NAME,
+    path: KEYWORDS_PATH,
+    branch: env.GITHUB_BRANCH,
+    message: "keywords: update spam-keywords.txt via admin",
+    content: Buffer.from(content, "utf-8").toString("base64"),
+    sha: current.data.sha,
+  });
 }
 
 // Append MANY approved entries with a SINGLE read + single commit (dedup against
