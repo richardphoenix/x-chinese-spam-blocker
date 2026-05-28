@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { listPending } from "@/lib/db/submissions";
-import { SubmissionRow } from "./submission-row";
+import { ReviewList } from "./review-list";
 
 export const dynamic = "force-dynamic";
 
@@ -15,10 +15,7 @@ export default async function AdminPage() {
   return (
     <main style={{ maxWidth: 760, margin: "0 auto", padding: 24 }}>
       <h1>待审核 spam 提交（{pending.length}）</h1>
-      {pending.length === 0 ? <p>队列为空。</p> : null}
-      {pending.map((sub) => (
-        <SubmissionRow key={sub.id} sub={sub} />
-      ))}
+      {pending.length === 0 ? <p>队列为空。</p> : <ReviewList submissions={pending} />}
     </main>
   );
 }

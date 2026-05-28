@@ -49,3 +49,38 @@ export async function commitApprovedEntry(
   });
   return "added";
 }
+
+// Append MANY approved entries with a SINGLE read + single commit (dedup against
+// the existing file and within the batch). Returns how many new entries were added.
+export async function commitApprovedEntries(
+  accessToken: string,
+  reviews: ReviewInput[],
+): Promise<{ added: number }> {
+  if (reviews.length === 0) return { added: 0 };
+  const octokit = new Octokit({ auth: accessToken });
+  const { list, sha } = await readBlocklist(octokit);
+
+  const addedDate = new Date().toISOString().slice(0, 10);
+  let working = list;
+  let added = 0;
+  for (const review of reviews) {
+    const entry = buildBlocklistEntry(review, addedDate);
+    const res = upsertBlocklistEntry(working, entry);
+    working = res.list;
+    if (res.added) added++;
+  }
+
+  if (added === 0) return { added: 0 };
+
+  const nextContent = JSON.stringify(working, null, 2) + "\n";
+  await octokit.rest.repos.createOrUpdateFileContents({
+    owner: env.GITHUB_REPO_OWNER,
+    repo: env.GITHUB_REPO_NAME,
+    path: env.GITHUB_BLOCKLIST_PATH,
+    branch: env.GITHUB_BRANCH,
+    message: `blocklist: add ${added} account(s)`,
+    content: Buffer.from(nextContent, "utf-8").toString("base64"),
+    sha,
+  });
+  return { added };
+}

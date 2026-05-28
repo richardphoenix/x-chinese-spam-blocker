@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "./client";
 import { submissions, type Submission } from "./schema";
 import type { ValidSubmission } from "@/lib/validate";
@@ -56,4 +56,17 @@ export async function markRejected(id: string, notes: string): Promise<void> {
     .update(submissions)
     .set({ status: "rejected", reviewedAt: new Date(), reviewNotes: notes })
     .where(eq(submissions.id, id));
+}
+
+export async function getSubmissionsByIds(ids: string[]): Promise<Submission[]> {
+  if (ids.length === 0) return [];
+  return db.select().from(submissions).where(inArray(submissions.id, ids));
+}
+
+export async function markRejectedMany(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(submissions)
+    .set({ status: "rejected", reviewedAt: new Date() })
+    .where(inArray(submissions.id, ids));
 }
