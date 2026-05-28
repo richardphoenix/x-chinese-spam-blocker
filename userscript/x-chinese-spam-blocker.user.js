@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.11.1
+// @version      0.11.2
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -469,7 +469,10 @@
     return match ? match[1] : null;
   }
 
-  async function blockUserById(userId) {
+  // Block by screen_name. The timeline DOM has no real user_id (the avatar URL
+  // number is the IMAGE id, not the account id), but blocks/create.json accepts
+  // screen_name directly, which we extract reliably.
+  async function blockByScreenName(screenName) {
     const csrf = await getCsrfToken();
     if (!csrf) throw new Error('无法获取 CSRF token');
 
@@ -482,7 +485,7 @@
           'x-csrf-token': csrf,
           'authorization': X_BEARER
         },
-        data: `user_id=${userId}`,
+        data: `screen_name=${encodeURIComponent(screenName)}`,
         onload: (res) => {
           if (res.status >= 200 && res.status < 300) {
             resolve();
@@ -773,36 +776,30 @@
       return;
     }
 
-    const approvedCount = approvedBlocklistUserIds.size;
-    if (approvedCount === 0) {
-      alert('当前没有加载到维护者审核的黑名单账号');
+    // Block by screen_name (reliable), skipping anything in the local whitelist.
+    const names = approvedBlocklistEntries
+      .map(e => e.screen_name)
+      .filter(Boolean)
+      .filter(sn => !isWhitelisted(sn));
+
+    if (names.length === 0) {
+      alert('当前没有可拉黑的维护者黑名单账号（或都在你的本地白名单里）');
       return;
     }
 
-    // Take a reasonable preview size
-    const previewSize = Math.min(approvedCount, 50);
-    const idsForPreview = Array.from(approvedBlocklistUserIds).slice(0, previewSize);
+    // Cap per session
+    const toBlock = names.slice(0, CONFIG.MAX_BLOCK_PER_SESSION);
+    const previewList = toBlock.slice(0, 15).map(sn => `• @${sn}`).join('\n');
+    const moreText = toBlock.length > 15 ? `\n... 还有 ${toBlock.length - 15} 个` : '';
 
-    // Simple preview using confirm + list (can be improved to a real modal later)
-    const previewList = idsForPreview.slice(0, 15).map(id => `• ${id}`).join('\n');
-    const moreText = idsForPreview.length > 15 ? `\n... 还有 ${idsForPreview.length - 15} 个` : '';
-
-    const msg = `即将从维护者黑名单中拉黑以下账号（前15个预览）：\n\n${previewList}${moreText}\n\n` +
-      `总计：${idsForPreview.length} 个账号\n` +
+    const msg = `即将从维护者黑名单中按 @句柄 拉黑以下账号（前15个预览）：\n\n${previewList}${moreText}\n\n` +
+      `总计：${toBlock.length} 个账号\n` +
       `间隔：10秒/个\n\n` +
       `确认后开始执行（可中途暂停/取消）。`;
 
     if (!confirm(msg)) return;
 
-    // Prepare queue (filter out anything already in local whitelist just in case)
-    const idsToBlock = idsForPreview.filter(id => !isWhitelisted(id));
-
-    if (idsToBlock.length === 0) {
-      alert('所有待拉黑账号都在你的本地白名单中，已跳过。');
-      return;
-    }
-
-    blockingQueue = idsToBlock.map(id => ({ userId: id }));
+    blockingQueue = toBlock.map(sn => ({ screenName: sn }));
     blockedThisSession = 0;
     isBlockingActive = true;
     blockingPaused = false;
@@ -825,14 +822,14 @@
       updatePanelStatus(`拉黑中 第 ${attempted} 个（成功 ${blockedThisSession}，剩余 ${remaining}） - 10秒间隔`);
 
       try {
-        await blockUserById(item.userId);
+        await blockByScreenName(item.screenName);
         blockedThisSession++;
         consecutiveFails = 0;
         await sleep(CONFIG.BLOCK_DELAY_MS);
       } catch (err) {
         consecutiveFails++;
         lastError = String((err && err.message) || err);
-        console.error('[Block Queue] Failed to block', item.userId, lastError);
+        console.error('[Block Queue] Failed to block', item.screenName, lastError);
 
         if (lastError.includes('429') || lastError.includes('limit')) {
           updatePanelStatus('触发 X 频率限制，自动暂停 30 分钟...');
@@ -1080,7 +1077,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.1</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.2</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
