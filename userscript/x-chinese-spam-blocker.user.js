@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.9.0
+// @version      0.9.1
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -67,6 +67,7 @@
 
     // Backend submission API. Update to the deployed domain after first deploy.
     SUBMIT_API: 'https://x-chinese-spam-blocker.vercel.app/api/submit',
+    SUBMIT_BATCH_API: 'https://x-chinese-spam-blocker.vercel.app/api/submit/batch',
   };
 
   // ===================== STATE =====================
@@ -313,7 +314,7 @@
 
     // Shared false-positive recovery: whitelist (if possible) + reveal + drop from session list.
     // Reused by the in-place bar button and the "本次隐藏" reviewer modal.
-    const record = { screenName, displayName, tweetText, userId: info ? info.userId : null, score: info ? calculateSpamScore(info) : 0 };
+    const record = { screenName, displayName, tweetText, userId: info ? info.userId : null, score: info ? calculateSpamScore(info) : 0, element };
     record.recover = async () => {
       if (screenName) await addToLocalWhitelist(screenName);
       originalChildren.forEach(c => { c.style.display = ''; });
@@ -712,46 +713,69 @@
    * Allow users to submit suspicious accounts to the maintainer for review.
    * This does NOT directly add to the blocklist. Submissions go through GitHub Issues for audit.
    */
-  // Submit one hidden record to the review queue. Resolves true on success.
-  function submitOne(rec) {
-    return new Promise((resolve) => {
-      if (!rec.userId) { resolve(false); return; }
-      const payload = {
-        user_id: String(rec.userId),
+  // Resolve a record's user_id, re-extracting from the live element if the
+  // hide-time value was missing (X avatars lazy-load, so it may be ready now).
+  function recordUserId(rec) {
+    if (rec.userId) return rec.userId;
+    if (rec.element && rec.element.isConnected) {
+      const fresh = extractUserInfo(rec.element);
+      if (fresh && fresh.userId) {
+        rec.userId = fresh.userId;
+        return fresh.userId;
+      }
+    }
+    return null;
+  }
+
+  // Submit ALL accounts hidden this session in ONE batch request (server dedups by user_id).
+  async function submitAllHidden() {
+    if (hiddenItems.length === 0) {
+      alert('本次没有被隐藏的账号可提交。');
+      return;
+    }
+
+    const accounts = [];
+    let skipped = 0;
+    hiddenItems.forEach((rec) => {
+      const userId = recordUserId(rec);
+      if (!userId) { skipped++; return; }
+      accounts.push({
+        user_id: String(userId),
         screen_name: rec.screenName || '',
         display_name: rec.displayName || '',
         tweet_text: rec.tweetText || '',
         source_url: window.location.href,
         detected_reasons: ['userscript-report'],
         detected_score: rec.score || 0,
-      };
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: CONFIG.SUBMIT_API,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify(payload),
-        onload: (res) => resolve(res.status >= 200 && res.status < 300),
-        onerror: () => resolve(false),
       });
     });
-  }
 
-  // Submit ALL accounts hidden this session to the review queue (server dedups by user_id).
-  async function submitAllHidden() {
-    const items = hiddenItems.slice();
-    if (items.length === 0) {
-      alert('本次没有被隐藏的账号可提交。');
+    if (accounts.length === 0) {
+      alert('没有可提交的隐藏账号（取不到 user_id，请向上滚动让头像加载后重试）。');
       return;
     }
-    let ok = 0;
-    let fail = 0;
-    for (let i = 0; i < items.length; i++) {
-      updatePanelStatus(`提交中 ${i + 1}/${items.length}...`);
-      const success = await submitOne(items[i]);
-      if (success) ok++; else fail++;
-    }
-    updatePanelStatus(`提交完成：成功 ${ok}${fail ? `，失败 ${fail}（多为取不到 ID）` : ''}`);
-    setTimeout(() => updatePanelStatus('就绪'), 5000);
+
+    updatePanelStatus(`正在提交 ${accounts.length} 个账号...`);
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: CONFIG.SUBMIT_BATCH_API,
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ accounts }),
+      onload: (res) => {
+        try {
+          const d = JSON.parse(res.responseText);
+          const extra = skipped ? `，跳过 ${skipped}（无 ID）` : '';
+          updatePanelStatus(`提交完成：新增 ${d.created}，已存在 ${d.duplicate}${d.invalid ? `，无效 ${d.invalid}` : ''}${extra}`);
+        } catch {
+          updatePanelStatus(res.status >= 200 && res.status < 300 ? '提交完成' : `提交失败(${res.status})`);
+        }
+        setTimeout(() => updatePanelStatus('就绪'), 6000);
+      },
+      onerror: () => {
+        updatePanelStatus('提交失败，请稍后重试');
+        setTimeout(() => updatePanelStatus('就绪'), 5000);
+      },
+    });
   }
 
   // ===================== UI PANEL =====================
@@ -815,7 +839,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.0</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.1</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
