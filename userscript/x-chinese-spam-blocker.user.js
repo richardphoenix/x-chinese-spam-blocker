@@ -116,8 +116,11 @@
     const screenNameMatch = href.match(/\/([A-Za-z0-9_]+)$/);
     const screenName = screenNameMatch ? screenNameMatch[1] : null;
 
-    // X doesn't expose user_id as a DOM attribute, but the avatar image URL
-    // (pbs.twimg.com/profile_images/<user_id>/...) embeds it — reliable + free, no API.
+    // NOTE: X exposes no real user_id in the timeline DOM. The number in the
+    // avatar URL (pbs.twimg.com/profile_images/<n>/...) is the IMAGE id, NOT the
+    // account id — do NOT use it to block (X returns "User not found"). It's kept
+    // here only as a coarse per-avatar fingerprint for submission/dedup; the
+    // reliable identity is screen_name. Blocking goes through blockByScreenName.
     let userId = element.getAttribute('data-user-id') || null;
     if (!userId) {
       const avatar = element.querySelector('img[src*="/profile_images/"]');
