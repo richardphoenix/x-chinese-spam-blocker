@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.7.0
+// @version      0.7.1
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -75,7 +75,7 @@
   let approvedBlocklistEntries = [];          // Full entries (name/category/reason) for the viewer
 
   let activeKeywords = [];               // Loaded from remote spam-keywords.txt + fallback
-  let hiddenThisSession = 0;
+  let hiddenItems = [];                  // Records of posts hidden this session (for the reviewer)
   let isHidingEnabled = true;
 
   // Advanced blocking system
@@ -269,9 +269,11 @@
   function hideElement(element) {
     if (!element || element.dataset.spamHidden === 'true') return;
 
-    // Capture handle before collapsing the content
+    // Capture content before collapsing (for the reviewer / hidden list)
     const info = extractUserInfo(element);
     const screenName = info ? info.screenName : null;
+    const displayName = info ? info.displayName : '';
+    const tweetText = info ? info.tweetText : '';
     const handle = screenName ? '@' + screenName : 'spam';
 
     element.dataset.spamHidden = 'true';
@@ -279,9 +281,6 @@
     // Collapse: hide the original content, leave only a thin bar
     const originalChildren = Array.from(element.children);
     originalChildren.forEach(c => { c.style.display = 'none'; });
-
-    hiddenThisSession++;
-    updateHiddenCount();
 
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:12px;color:#8899a6;border-bottom:1px solid #2f3336;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
@@ -305,31 +304,39 @@
       showBtn.textContent = expanded ? '显示' : '收起';
     };
 
-    // False-positive recovery: whitelist + reveal permanently
+    // Shared false-positive recovery: whitelist (if possible) + reveal + drop from session list.
+    // Reused by the in-place bar button and the "本次隐藏" reviewer modal.
+    const record = { screenName, displayName, tweetText };
+    record.recover = async () => {
+      if (screenName) await addToLocalWhitelist(screenName);
+      originalChildren.forEach(c => { c.style.display = ''; });
+      bar.remove();
+      const i = hiddenItems.indexOf(record);
+      if (i >= 0) hiddenItems.splice(i, 1);
+      updateHiddenCount();
+      updatePanelCount();
+    };
+
     const whitelistBtn = document.createElement('span');
     whitelistBtn.textContent = '误杀→加白名单';
     whitelistBtn.style.cssText = 'color:#1d9bf0;cursor:pointer;margin-left:auto;';
-    whitelistBtn.onclick = async (e) => {
+    whitelistBtn.onclick = (e) => {
       e.stopImmediatePropagation();
-      if (!screenName) {
-        alert('无法获取该账号的句柄，暂时无法加白名单。');
-        return;
-      }
-      await addToLocalWhitelist(screenName);
-      originalChildren.forEach(c => { c.style.display = ''; });
-      bar.remove();
-      updatePanelCount();
+      record.recover();
     };
 
     bar.appendChild(text);
     bar.appendChild(showBtn);
     bar.appendChild(whitelistBtn);
     element.insertBefore(bar, element.firstChild);
+
+    hiddenItems.push(record);
+    updateHiddenCount();
   }
 
   function updateHiddenCount() {
     const el = document.getElementById('x-spam-hidden');
-    if (el) el.textContent = hiddenThisSession;
+    if (el) el.textContent = hiddenItems.length;
   }
 
   function scanAndHide() {
@@ -505,6 +512,45 @@
         };
         row.appendChild(name);
         row.appendChild(rm);
+        box.appendChild(row);
+      });
+    });
+  }
+
+  function openHiddenModal() {
+    openListModal(`本次隐藏（${hiddenItems.length}）— 复查是否误杀`, (box) => {
+      if (hiddenItems.length === 0) {
+        const p = document.createElement('div');
+        p.textContent = '（本次还没有隐藏任何推文）';
+        p.style.color = '#8899a6';
+        box.appendChild(p);
+        return;
+      }
+      hiddenItems.slice().forEach((item) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:8px 0;border-bottom:1px solid #2f3336;';
+
+        const head = document.createElement('div');
+        head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;';
+        const who = document.createElement('span');
+        who.textContent = (item.displayName || '') + (item.screenName ? '  @' + item.screenName : '');
+        who.style.cssText = 'font-weight:600;';
+        const recover = document.createElement('span');
+        recover.textContent = '恢复并加白';
+        recover.style.cssText = 'color:#1d9bf0;cursor:pointer;white-space:nowrap;';
+        recover.onclick = async () => {
+          await item.recover();
+          row.remove();
+        };
+        head.appendChild(who);
+        head.appendChild(recover);
+        row.appendChild(head);
+
+        const body = document.createElement('div');
+        body.style.cssText = 'color:#8899a6;font-size:12px;margin-top:4px;white-space:pre-wrap;word-break:break-word;';
+        body.textContent = item.tweetText || '（无文字内容，可能是纯图片/emoji）';
+        row.appendChild(body);
+
         box.appendChild(row);
       });
     });
@@ -763,7 +809,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.7.0</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.7.1</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
@@ -779,7 +825,7 @@
 
       <div style="margin-top:8px;font-size:11px;color:#8899a6; display:flex; gap:12px; flex-wrap: wrap;">
         <span id="x-spam-blocklist-open" style="cursor:pointer;text-decoration:underline;">正式黑名单：<span id="x-spam-count">0</span></span>
-        <span>本次隐藏：<span id="x-spam-hidden">0</span></span>
+        <span id="x-spam-hidden-open" style="cursor:pointer;text-decoration:underline;">本次隐藏：<span id="x-spam-hidden">0</span></span>
         <span id="x-spam-whitelist-open" style="cursor:pointer;text-decoration:underline;">本地白名单：<span id="x-spam-whitelist">0</span></span>
       </div>
     `;
@@ -818,6 +864,7 @@
     // List viewers
     document.getElementById('x-spam-blocklist-open').addEventListener('click', openBlocklistModal);
     document.getElementById('x-spam-whitelist-open').addEventListener('click', openWhitelistModal);
+    document.getElementById('x-spam-hidden-open').addEventListener('click', openHiddenModal);
 
     return panelEl;
   }
