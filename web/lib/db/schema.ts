@@ -2,8 +2,9 @@ import { integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-c
 
 export const submissions = pgTable("submissions", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: text("user_id").notNull().unique(),
-  screenName: text("screen_name").notNull().default(""),
+  // Identity / dedup key. (user_id is vestigial — the avatar image id, not a real account id.)
+  screenName: text("screen_name").notNull().unique(),
+  userId: text("user_id"),
   displayName: text("display_name").notNull().default(""),
   tweetText: text("tweet_text").notNull().default(""),
   sourceUrl: text("source_url").notNull().default(""),

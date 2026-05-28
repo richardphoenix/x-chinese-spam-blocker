@@ -30,9 +30,10 @@ test("upsert appends a new entry", () => {
   expect(result.list).toHaveLength(1);
 });
 
-test("upsert is a no-op when user_id already present", () => {
+test("upsert is a no-op when screen_name already present (case-insensitive)", () => {
   const entry = buildBlocklistEntry(review, "2026-05-27");
-  const existing = [{ ...entry, reason: "old" }];
+  // same screen_name, different case + different user_id → still a duplicate
+  const existing = [{ ...entry, reason: "old", screen_name: "SPAM_ACCT", user_id: "999" }];
   const result = upsertBlocklistEntry(existing, entry);
   expect(result.added).toBe(false);
   expect(result.list).toHaveLength(1);

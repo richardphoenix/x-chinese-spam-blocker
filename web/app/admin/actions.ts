@@ -29,7 +29,7 @@ export async function approveSubmission(formData: FormData) {
 
   // Commit to GitHub FIRST; only update Neon if the commit succeeds, to avoid drift.
   await commitApprovedEntry(accessToken, {
-    user_id: sub.userId,
+    user_id: sub.userId ?? "",
     screen_name: sub.screenName,
     display_name: sub.displayName,
     category,
@@ -66,7 +66,7 @@ export async function approveBatch(ids: string[]) {
   await commitApprovedEntries(
     accessToken,
     subs.map((s) => ({
-      user_id: s.userId,
+      user_id: s.userId ?? "",
       screen_name: s.screenName,
       display_name: s.displayName,
       category: DEFAULT_CATEGORY,

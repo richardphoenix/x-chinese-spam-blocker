@@ -3,13 +3,13 @@ import { db } from "./client";
 import { submissions, type Submission } from "./schema";
 import type { ValidSubmission } from "@/lib/validate";
 
-// Insert or, if user_id exists, bump votes + last_submitted_at. Returns whether a new row was created.
+// Insert or, if screen_name exists, bump votes + last_submitted_at. Returns whether a new row was created.
 export async function upsertSubmission(v: ValidSubmission): Promise<{ created: boolean }> {
   const result = await db
     .insert(submissions)
     .values({
-      userId: v.user_id,
       screenName: v.screen_name,
+      userId: v.user_id || null,
       displayName: v.display_name,
       tweetText: v.tweet_text,
       sourceUrl: v.source_url,
@@ -17,7 +17,7 @@ export async function upsertSubmission(v: ValidSubmission): Promise<{ created: b
       detectedScore: v.detected_score,
     })
     .onConflictDoUpdate({
-      target: submissions.userId,
+      target: submissions.screenName,
       set: {
         votes: sql`${submissions.votes} + 1`,
         lastSubmittedAt: new Date(),

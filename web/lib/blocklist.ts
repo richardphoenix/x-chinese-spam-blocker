@@ -33,7 +33,10 @@ export function upsertBlocklistEntry(
   list: BlocklistEntry[],
   entry: BlocklistEntry,
 ): { list: BlocklistEntry[]; added: boolean } {
-  if (list.some((e) => String(e.user_id) === String(entry.user_id))) {
+  // Dedup by screen_name (case-insensitive) — the reliable identity. user_id is
+  // vestigial (avatar image id) and not unique per account.
+  const key = String(entry.screen_name || "").toLowerCase();
+  if (key && list.some((e) => String(e.screen_name || "").toLowerCase() === key)) {
     return { list, added: false };
   }
   return { list: [...list, entry], added: true };

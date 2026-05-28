@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.11.2
+// @version      0.12.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -656,13 +656,10 @@
         return;
       }
 
-      // Submit the whole persistent list to the review queue (only entries that
-      // carry a user_id can be submitted; older screen-name-only entries are skipped).
-      const submittable = Array.from(localBlocklist.values()).filter(Boolean).length;
+      // Submit the whole persistent list to the review queue (keyed by screen_name).
       const submitBtn = document.createElement('button');
-      submitBtn.textContent = `提交 ${submittable} 个到审核队列`;
+      submitBtn.textContent = `提交 ${localBlocklist.size} 个到审核队列`;
       submitBtn.style.cssText = 'width:100%;margin-bottom:10px;background:#1d9bf0;color:#fff;border:none;border-radius:9999px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;';
-      submitBtn.disabled = submittable === 0;
       submitBtn.onclick = () => {
         closeListModal();
         submitLocalBlocklist();
@@ -899,7 +896,7 @@
     return null;
   }
 
-  // Submit ALL accounts hidden this session in ONE batch request (server dedups by user_id).
+  // Submit ALL accounts hidden this session in ONE batch request (server dedups by screen_name).
   async function submitAllHidden() {
     if (hiddenItems.length === 0) {
       alert('本次没有被隐藏的账号可提交。');
@@ -909,11 +906,10 @@
     const accounts = [];
     let skipped = 0;
     hiddenItems.forEach((rec) => {
-      const userId = recordUserId(rec);
-      if (!userId) { skipped++; return; }
+      if (!rec.screenName) { skipped++; return; }
       accounts.push({
-        user_id: String(userId),
-        screen_name: rec.screenName || '',
+        screen_name: rec.screenName,
+        user_id: String(recordUserId(rec) || ''),
         display_name: rec.displayName || '',
         tweet_text: rec.tweetText || '',
         source_url: window.location.href,
@@ -923,7 +919,7 @@
     });
 
     if (accounts.length === 0) {
-      alert('没有可提交的隐藏账号（取不到 user_id，请向上滚动让头像加载后重试）。');
+      alert('没有可提交的隐藏账号（取不到句柄）。');
       return;
     }
 
@@ -936,7 +932,7 @@
       onload: (res) => {
         try {
           const d = JSON.parse(res.responseText);
-          const extra = skipped ? `，跳过 ${skipped}（无 ID）` : '';
+          const extra = skipped ? `，跳过 ${skipped}（无句柄）` : '';
           updatePanelStatus(`提交完成：新增 ${d.created}，已存在 ${d.duplicate}${d.invalid ? `，无效 ${d.invalid}` : ''}${extra}`);
         } catch {
           updatePanelStatus(res.status >= 200 && res.status < 300 ? '提交完成' : `提交失败(${res.status})`);
@@ -954,12 +950,11 @@
   // queue. Only entries that stored a user_id can be submitted.
   function submitLocalBlocklist() {
     const accounts = [];
-    let noId = 0;
     localBlocklist.forEach((userId, sn) => {
-      if (!userId) { noId++; return; }
+      if (!sn) return;
       accounts.push({
-        user_id: String(userId),
         screen_name: sn,
+        user_id: userId ? String(userId) : '',
         display_name: '',
         tweet_text: '',
         source_url: window.location.href,
@@ -969,7 +964,7 @@
     });
 
     if (accounts.length === 0) {
-      alert('本地隐藏里没有可提交的账号（缺 user_id，老数据只存了句柄）。');
+      alert('本地隐藏里没有账号可提交。');
       return;
     }
 
@@ -982,8 +977,7 @@
       onload: (res) => {
         try {
           const d = JSON.parse(res.responseText);
-          const extra = noId ? `，跳过 ${noId}（无 ID）` : '';
-          updatePanelStatus(`提交完成：新增 ${d.created}，已存在 ${d.duplicate}${d.invalid ? `，无效 ${d.invalid}` : ''}${extra}`);
+          updatePanelStatus(`提交完成：新增 ${d.created}，已存在 ${d.duplicate}${d.invalid ? `，无效 ${d.invalid}` : ''}`);
         } catch {
           updatePanelStatus(res.status >= 200 && res.status < 300 ? '提交完成' : `提交失败(${res.status})`);
         }
@@ -1080,7 +1074,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.2</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.12.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">

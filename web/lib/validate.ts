@@ -1,8 +1,10 @@
 import { z } from "zod";
 
 const schema = z.object({
-  user_id: z.string().regex(/^\d{1,25}$/, "user_id must be numeric"),
-  screen_name: z.string().max(50).optional().default(""),
+  // Identity = screen_name (X handle). user_id is vestigial (the timeline only
+  // exposes the avatar image id, not the real account id) so it's optional.
+  screen_name: z.string().regex(/^[A-Za-z0-9_]{1,15}$/, "invalid screen_name"),
+  user_id: z.string().max(40).optional().default(""),
   display_name: z.string().max(200).optional().default(""),
   tweet_text: z.string().max(2000).optional().default(""),
   source_url: z.string().max(500).optional().default(""),
