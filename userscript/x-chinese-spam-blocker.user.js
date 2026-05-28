@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.8.2
+// @version      0.9.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -313,7 +313,7 @@
 
     // Shared false-positive recovery: whitelist (if possible) + reveal + drop from session list.
     // Reused by the in-place bar button and the "本次隐藏" reviewer modal.
-    const record = { screenName, displayName, tweetText };
+    const record = { screenName, displayName, tweetText, userId: info ? info.userId : null, score: info ? calculateSpamScore(info) : 0 };
     record.recover = async () => {
       if (screenName) await addToLocalWhitelist(screenName);
       originalChildren.forEach(c => { c.style.display = ''; });
@@ -395,33 +395,6 @@
   async function getCsrfToken() {
     const match = document.cookie.match(/ct0=([^;]+)/);
     return match ? match[1] : null;
-  }
-
-  // Resolve a @screen_name to a numeric user_id via X's internal API.
-  // Free — uses the logged-in session (cookies + ct0 + web bearer), not the paid X API v2.
-  // Returns null on failure (X may change this endpoint).
-  async function resolveUserId(screenName) {
-    if (!screenName) return null;
-    const csrf = await getCsrfToken();
-    return new Promise((resolve) => {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: `https://api.x.com/1.1/users/show.json?screen_name=${encodeURIComponent(screenName)}`,
-        headers: {
-          'x-csrf-token': csrf || '',
-          'authorization': X_BEARER,
-        },
-        onload: (res) => {
-          try {
-            const data = JSON.parse(res.responseText);
-            resolve(data.id_str || (data.id != null ? String(data.id) : null));
-          } catch {
-            resolve(null);
-          }
-        },
-        onerror: () => resolve(null),
-      });
-    });
   }
 
   async function blockUserById(userId) {
@@ -739,61 +712,46 @@
    * Allow users to submit suspicious accounts to the maintainer for review.
    * This does NOT directly add to the blocklist. Submissions go through GitHub Issues for audit.
    */
-  async function submitCurrentSpamToDatabase() {
-    // The hidden marker lives on the cellInnerDiv (tweets) or UserCell, not the article.
-    const visibleSpam = document.querySelector('[data-spam-hidden="true"]');
-
-    if (!visibleSpam) {
-      alert('未找到被隐藏的账号，请先让脚本隐藏到 spam 后再提交。');
-      return;
-    }
-
-    const info = extractUserInfo(visibleSpam);
-    if (!info || !info.screenName) {
-      alert('无法获取该账号信息，暂时无法提交。');
-      return;
-    }
-
-    // X does not expose user_id in the timeline DOM — resolve it via the internal API.
-    updatePanelStatus('正在解析账号 ID...');
-    let userId = info.userId;
-    if (!userId) userId = await resolveUserId(info.screenName);
-    if (!userId) {
-      updatePanelStatus('无法解析账号 ID（X 接口可能变动），提交失败');
-      setTimeout(() => updatePanelStatus('就绪'), 4000);
-      return;
-    }
-
-    const payload = {
-      user_id: String(userId),
-      screen_name: info.screenName || '',
-      display_name: info.displayName || '',
-      tweet_text: info.tweetText || '',
-      source_url: window.location.href,
-      detected_reasons: ['userscript-report'],
-      detected_score: calculateSpamScore(info),
-    };
-
-    updatePanelStatus('正在提交到审核队列...');
-    GM_xmlhttpRequest({
-      method: 'POST',
-      url: CONFIG.SUBMIT_API,
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify(payload),
-      onload: (res) => {
-        try {
-          const data = JSON.parse(res.responseText);
-          updatePanelStatus(data.message || '已提交，等待审核');
-        } catch {
-          updatePanelStatus(res.status === 200 ? '已提交，等待审核' : '提交失败');
-        }
-        setTimeout(() => updatePanelStatus('就绪'), 4000);
-      },
-      onerror: () => {
-        updatePanelStatus('提交失败，请稍后重试');
-        setTimeout(() => updatePanelStatus('就绪'), 4000);
-      },
+  // Submit one hidden record to the review queue. Resolves true on success.
+  function submitOne(rec) {
+    return new Promise((resolve) => {
+      if (!rec.userId) { resolve(false); return; }
+      const payload = {
+        user_id: String(rec.userId),
+        screen_name: rec.screenName || '',
+        display_name: rec.displayName || '',
+        tweet_text: rec.tweetText || '',
+        source_url: window.location.href,
+        detected_reasons: ['userscript-report'],
+        detected_score: rec.score || 0,
+      };
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: CONFIG.SUBMIT_API,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify(payload),
+        onload: (res) => resolve(res.status >= 200 && res.status < 300),
+        onerror: () => resolve(false),
+      });
     });
+  }
+
+  // Submit ALL accounts hidden this session to the review queue (server dedups by user_id).
+  async function submitAllHidden() {
+    const items = hiddenItems.slice();
+    if (items.length === 0) {
+      alert('本次没有被隐藏的账号可提交。');
+      return;
+    }
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < items.length; i++) {
+      updatePanelStatus(`提交中 ${i + 1}/${items.length}...`);
+      const success = await submitOne(items[i]);
+      if (success) ok++; else fail++;
+    }
+    updatePanelStatus(`提交完成：成功 ${ok}${fail ? `，失败 ${fail}（多为取不到 ID）` : ''}`);
+    setTimeout(() => updatePanelStatus('就绪'), 5000);
   }
 
   // ===================== UI PANEL =====================
@@ -857,12 +815,12 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.8.2</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
         <button id="x-spam-toggle-hide">隐藏已开启</button>
-        <button id="x-spam-submit" class="secondary">提交被隐藏账号</button>
+        <button id="x-spam-submit" class="secondary">提交全部隐藏账号</button>
       </div>
 
       <div class="row" style="margin-top: 6px;">
@@ -907,7 +865,7 @@
     if (cancelBtn) cancelBtn.addEventListener('click', cancelBlocking);
 
     // Community submission button (opens GitHub issue for review)
-    document.getElementById('x-spam-submit').addEventListener('click', submitCurrentSpamToDatabase);
+    document.getElementById('x-spam-submit').addEventListener('click', submitAllHidden);
 
     // List viewers
     document.getElementById('x-spam-blocklist-open').addEventListener('click', openBlocklistModal);

@@ -13,7 +13,7 @@ export function getSubmitRatelimit(): Ratelimit {
         url: env.KV_REST_API_URL,
         token: env.KV_REST_API_TOKEN,
       }),
-      limiter: Ratelimit.slidingWindow(10, "1 m"),
+      limiter: Ratelimit.slidingWindow(60, "1 m"),
       prefix: "submit",
     });
   }
