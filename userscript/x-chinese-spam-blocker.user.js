@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.9.4
+// @version      0.9.5
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -129,8 +129,10 @@
     // Tweet text (very important for new variants)
     const tweetTextEl = element.querySelector('div[data-testid="tweetText"]');
     const tweetText = tweetTextEl ? tweetTextEl.textContent.trim() : '';
+    // X renders emoji as <img> (stripped from textContent), so count them separately.
+    const emojiCount = tweetTextEl ? tweetTextEl.querySelectorAll('img').length : 0;
 
-    return { screenName, userId, displayName, tweetText, element };
+    return { screenName, userId, displayName, tweetText, emojiCount, element };
   }
 
   // Calculate spam probability score (0-100)
@@ -190,6 +192,18 @@
         if (vowelRatio <= 0.2 || (maxConsonantRun >= 3 && vowelRatio < 0.3)) {
           score += 40;
         }
+      }
+    }
+
+    // 7. Emoji-garbage spam: several emoji + isolated single letters, no real
+    //    words (e.g. "🙂x ❤️ 23😀 🌖 🕺H"). 同城上门 escort family that uses
+    //    real-looking western names — the spam marker is only in the avatar image,
+    //    so name/keyword rules miss it. (emojiCount comes from <img> count.)
+    if (tweetText) {
+      const realWords = tweetText.match(/[A-Za-z]{3,}|[一-鿿]{2,}/g) || [];
+      const strayLetters = (tweetText.match(/(?:^|[^A-Za-z])[A-Za-z](?:[^A-Za-z]|$)/g) || []).length;
+      if (realWords.length === 0 && strayLetters >= 1 && (userInfo.emojiCount || 0) >= 3) {
+        score += 40;
       }
     }
 
@@ -874,7 +888,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.4</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.5</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
