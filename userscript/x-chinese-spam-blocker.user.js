@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.9.1
+// @version      0.9.2
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -167,6 +167,28 @@
     // 5. Extremely low effort content (only emojis or very repetitive)
     if (tweetText && /^[\s\W\d\U0001F300-\U0001F9FF]+$/.test(tweetText) && tweetText.length > 5) {
       score += 15;
+    }
+
+    // 6. Bot pattern: gibberish ASCII display name whose handle is exactly that
+    //    name lowercased + digits (e.g. "Hqzbrc" / @hqzbrc85482). The 全国安排
+    //    escort-spam family — its only spam marker is in the avatar image, so
+    //    text keywords miss it. Require low-vowel gibberish to spare real
+    //    english-named accounts.
+    if (screenName && displayName && /^[A-Za-z]{5,12}$/.test(displayName)) {
+      const nameLower = displayName.toLowerCase();
+      const handleLower = screenName.toLowerCase();
+      const rest = handleLower.startsWith(nameLower) ? handleLower.slice(nameLower.length) : null;
+      if (rest && /^\d{3,}$/.test(rest)) {
+        const vowelRatio = (nameLower.match(/[aeiou]/g) || []).length / nameLower.length;
+        const maxConsonantRun = Math.max(
+          0,
+          ...(nameLower.match(/[^aeiou]+/g) || ['']).map(s => s.length)
+        );
+        // Gibberish (vs a real name): very few vowels OR a long consonant cluster.
+        if (vowelRatio <= 0.15 || maxConsonantRun >= 4) {
+          score += 40;
+        }
+      }
     }
 
     return Math.min(score, 100);
@@ -839,7 +861,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.1</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.2</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
