@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.8.1
+// @version      0.8.2
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -111,7 +111,14 @@
     const screenNameMatch = href.match(/\/([A-Za-z0-9_]+)$/);
     const screenName = screenNameMatch ? screenNameMatch[1] : null;
 
-    const userId = element.getAttribute('data-user-id') || null;
+    // X doesn't expose user_id as a DOM attribute, but the avatar image URL
+    // (pbs.twimg.com/profile_images/<user_id>/...) embeds it — reliable + free, no API.
+    let userId = element.getAttribute('data-user-id') || null;
+    if (!userId) {
+      const avatar = element.querySelector('img[src*="/profile_images/"]');
+      const m = avatar && (avatar.getAttribute('src') || '').match(/\/profile_images\/(\d+)\//);
+      if (m) userId = m[1];
+    }
 
     // Display name
     const displayNameEl = element.querySelector('div[data-testid="User-Name"] span') ||
@@ -850,7 +857,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.8.1</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.8.2</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
