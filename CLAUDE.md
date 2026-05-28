@@ -4,49 +4,101 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-针对中文 X（Twitter）上「寻固炮」等批量诈骗/引流 spam 账号的社区防御工具。核心是一个 Tampermonkey 油猴脚本 + GitHub 托管的黑名单/关键词数据。没有构建系统、依赖管理或测试套件——所有产物都是手写的纯文本（JS / JSON / TXT）。
+针对中文 X（Twitter）上「寻固炮 / 免费曰p / 想找会疼人的哥哥」等批量诈骗、引流 spam 的社区防御工具。三块互相独立又联通的产物：
 
-## 仓库结构与数据流
+1. **Tampermonkey 油猴脚本**（`userscript/`）— 用户端,实时折叠隐藏 + 批量提交 + 从黑名单批量拉黑。
+2. **社区数据**（`blocklist/`）— `blocklist.json`(维护者审核过的黑名单) + `spam-keywords.txt`(启发式关键词)。
+3. **审核后台**（`web/`）— Next.js + Neon + Vercel,接收提交、维护者审核、把通过的条目 commit 进 `blocklist.json`、在线编辑关键词。线上:`https://x-chinese-spam-blocker.vercel.app`。
+
+userscript 没构建系统(纯文本 JS);`web/` 有完整 Next.js 16 工程,用 `bun` + vitest。
+
+## 端到端数据流(理解任何一处改动前先抓住这条线)
 
 ```
-userscript/x-chinese-spam-blocker.user.js   # 唯一的可执行代码（单文件 IIFE）
-blocklist/blocklist.json                     # 维护者审核过的正式黑名单（user_id + 证据）
-blocklist/spam-keywords.txt                  # 启发式检测关键词（每行一个，# 开头为注释）
-blocklist/submissions/pending.json           # 社区待审核提交的占位模板
-discovery/                                    # 账号发现策略文档（暂无代码）
-docs/installation.md                          # 终端用户安装/使用指南
+[userscript] 隐藏 (关键词+维护者黑名单) ──[页面 user_id 从头像 URL 解析]──>
+   POST /api/submit/batch ──> [Neon submissions, status=pending, 按 user_id UPSERT 累加 votes]
+[维护者] 登录 /admin (GitHub OAuth, allowlist=ADMIN_GITHUB_LOGIN, 页面层 auth()守卫)
+   通过 ──> 用维护者 OAuth token 把条目 commit 进 blocklist.json (主分支)
+[userscript] 每 6 小时刷新 GitHub raw blocklist.json + spam-keywords.txt
 ```
 
-**关键运行时数据流**：脚本通过 `GM_xmlhttpRequest` 从 GitHub raw 拉取 `blocklist.json` 和 `spam-keywords.txt`。两个 URL 在脚本 `CONFIG` 中**硬编码指向 `richardphoenix/x-chinese-spam-blocker` 的 `main` 分支**。这意味着：编辑 `blocklist/` 下的数据文件后，必须推送到 GitHub `main` 才会对已安装脚本的用户生效——本地编辑不影响线上行为。脚本每 6 小时刷新一次远程黑名单。
+raw URL 在脚本 `CONFIG` 中硬编码指向 `richardphoenix/x-chinese-spam-blocker` 的 `main`,所以 `blocklist/` 下的改动必须 push 到 `main` 才对线上用户生效。raw 有约 5 分钟 CDN 缓存,不是秒更。
 
-## 核心架构（两层防御，安全级别不同）
+## 仓库结构
 
-整个脚本是 `userscript/x-chinese-spam-blocker.user.js` 中的单个 IIFE，理解它需抓住这两条独立路径：
+```
+userscript/x-chinese-spam-blocker.user.js   # 单文件 IIFE,用户产物
+blocklist/
+  blocklist.json                            # 正式黑名单(user_id + 证据)
+  spam-keywords.txt                         # 关键词,# 开头是注释
+  submissions/                              # 流程说明(实际队列在 Neon)
+web/                                        # 审核后台 Next.js 应用,Vercel 部署
+  app/api/submit/route.ts                   # 单条提交
+  app/api/submit/batch/route.ts             # 批量提交(userscript 用这个)
+  app/admin/                                # 后台 UI
+  app/admin/keywords/                       # 关键词在线编辑
+  auth.ts                                   # next-auth v5 配置 (GitHub OAuth + allowlist)
+  lib/env.ts                                # zod 校验的 env,懒 Proxy
+  lib/db/*                                  # Drizzle schema + 仓储
+  lib/github.ts                             # Octokit 读写 blocklist.json / spam-keywords.txt
+  lib/blocklist.ts                          # 纯函数: 拼装 entry + 去重 upsert
+  lib/validate.ts                           # zod 提交校验
+  lib/ratelimit.ts                          # Upstash 限流 + clientIp
+docs/superpowers/                           # 设计 spec 与实现 plan(本项目用 superpowers 流程开发)
+```
 
-1. **隐藏（默认开启，激进）** — `MutationObserver` + 周期扫描时间线，对每条推文/用户卡片调用 `calculateSpamScore()` 启发式打分（关键词命中、可疑句柄正则如 `Frank8408766657`、短文本+多 emoji 等）。`score >= 40` 即隐藏（仅降低不透明度，不真正删除）。这层会用启发式，可能误杀，所以只隐藏不拉黑。
+## 用户脚本核心架构
 
-2. **批量拉黑（需用户显式触发，保守）** — **只**对 `blocklist.json` 里维护者审核过的 `user_id` 生效，**绝不**使用启发式分数。通过 X 内部 API `POST /i/api/1.1/blocks/create.json`（带从 cookie 读取的 `ct0` CSRF token + 硬编码 Bearer token）执行，强制 10 秒/个间隔、单 session 上限、遇 429 自动暂停 30 分钟、带队列/暂停/取消。
+整个脚本是 `userscript/x-chinese-spam-blocker.user.js` 的单个 IIFE。三条独立路径:
 
-**误杀防护优先级**：本地白名单（`GM_setValue` 持久化）> 维护者黑名单精确匹配 > 启发式分数。`isWhitelisted()` 在隐藏和拉黑前都会检查，永远最高优先级。
+1. **实时隐藏**(默认开,启发式) — `MutationObserver` + 周期扫描时间线,`calculateSpamScore()` 打分:关键词命中(+35+8/条)、显示名含关键词(+30)、极短文本+多 emoji(+22)、低质纯 emoji(+15)。`score >= 40` → `hideElement` **折叠**该元素(隐藏所有子元素 + 插入一条细栏「已隐藏 @xxx · 显示 · 误杀→加白名单」)。
+2. **批量提交**(`提交全部隐藏账号`) — 遍历 `hiddenItems`,在点击时刻**重新从存下的元素解析 user_id**(头像懒加载,隐藏时刻可能为空),组装一个数组 POST 到 `/api/submit/batch`,服务端去重。
+3. **批量拉黑**(`从维护者黑名单拉黑`) — 仅对 `blocklist.json` 里维护者审核过的 `user_id` 生效,**绝不**用启发式分数。走 X 内部 `POST /i/api/1.1/blocks/create.json`(`X_BEARER` 常量 + cookie 里的 `ct0`),10 秒/个、单 session 上限、429 自动暂停 30 分钟。
 
-## 治理模型（修改数据时必须遵守）
+**误杀防护优先级**:本地白名单(`GM_setValue` 持久化,**按 @screen_name 小写**) > 维护者黑名单精确匹配 > 启发式分数。
 
-- `blocklist.json` 只能由**维护者人工审核**后加入；普通用户不通过直接 PR 改它。
-- 社区提交走脚本的「提交到黑名单」按钮 → 自动生成 GitHub Issue（含 user_id、证据、检测分数）→ 维护者审核后才进 `blocklist.json`。
-- 批量拉黑功能只信任 `blocklist.json`，这是降低误杀风险的核心设计——新增/修改黑名单条目时务必有 `evidence` 字段且确认是真 spam。
+**面板底部三个计数都可点开成模态**:正式黑名单(只读)/ 本次隐藏(看推文内容、逐条恢复并加白)/ 本地白名单(可移除)。
 
-## 数据格式约定
+## userscript 重要约束与坑(踩过的)
 
-- `blocklist.json`：对象数组，字段 `user_id`（首选，最稳定）、`screen_name`、`name`、`reason`、`category`、`added`（`YYYY-MM-DD`）、`evidence`。`category` 取值：`寻固炮` / `色情引流` / `诈骗` / `其他`。当前文件含 `placeholder_*` 示例数据，尚未填入真实账号。
-- `spam-keywords.txt`：每行一个关键词，`#` 开头为注释。**形似字混淆**很重要——`曰p` 与 `日p`、`曰P` 与 `日P` 都要分别收录（spammer 用形近字绕过过滤）。脚本目前未做字符归一化，所以变体必须各自列出。
+- **X 不在时间线 DOM 上暴露 `user_id`**(没 `data-user-id`),而 1.1 `users/show.json` 已被 X 关闭。**从头像 URL 解析**:`pbs.twimg.com/profile_images/<user_id>/...` 第一段路径就是 user_id。`extractUserInfo()` 用这个。免费、不调任何 API。
+- **本地白名单按 screen_name(小写)存取**,因为 user_id 在 DOM 不可靠。
+- DOM 选择器依赖 X 当前的 `data-testid`(`tweet` / `UserCell` / `tweetText` / `User-Name`)— 这是最脆的部分,X 改版会失效。
+- 隐藏标记 `data-spam-hidden="true"` 打在 `cellInnerDiv`(推文)或 `UserCell`(用户卡片)上,**不在** `article` 上;选择器用 `[data-spam-hidden="true"]` 而不是 `article[data-spam-hidden]`。
+- 改脚本必 bump `// @version`(Tampermonkey 据此自动更新)+ 同步面板标题里的版本字符串。`FALLBACK_KEYWORDS` 在远程拉取失败时用,可与 `spam-keywords.txt` 不完全同步但保留几条最关键的。
+- 新增外部域名要加 `// @connect`。
+- `spam-keywords.txt` 注意**形似字混淆**:`曰p` 与 `日p`、`曰P` 与 `日P` 都要分别收录,脚本未做字符归一化。
 
-## 修改脚本时的注意事项
+## 后台(`web/`)关键决策与坑
 
-- 改 `userscript/*.user.js` 时记得同步 bump `// @version`（Tampermonkey 据此自动更新），并保持 `FALLBACK_KEYWORDS`（远程加载失败时的兜底）与 `spam-keywords.txt` 大致一致。
-- 新增需要访问的外部域名时，要在脚本头部加 `// @connect`。
-- DOM 选择器依赖 X 当前的 `data-testid`（`tweet`、`UserCell`、`tweetText`、`User-Name`）——X 改版会导致提取失效，这是最脆弱的部分。
-- `docs/installation.md` 与脚本现状有出入（文档写 8 秒/「拉黑可见 spam」，脚本实际是 10 秒/「从维护者黑名单拉黑」）——以脚本代码为准，改动行为时一并更新文档。
+技术栈:Next.js 16 + React 19 + bun + Drizzle(neon-http)+ Upstash + next-auth v5 beta + Tailwind v4 + shadcn (base-nova)。
 
-## 测试与运行
+**踩过的坑**(都已修复,但改的时候要意识到):
+- **env 必须懒加载**:`lib/env.ts` 用 `Proxy` 在首次属性访问时才 `parseEnv(process.env)`,否则 `next build` 在收集页面数据时就因 env 缺失抛 ZodError 失败。`lib/db/client.ts`、`lib/ratelimit.ts`、`auth.ts` 都用了类似的"延迟到请求时"模式。
+- **Auth.js 用 lazy 工厂**:`NextAuth(() => ({...}))` 而不是 `NextAuth({...})`,同上原因。
+- **/admin 用页面层 `auth()` 守卫,不用 middleware**:Next 16 对 middleware 默认导出做静态检查,next-auth v5 的 `export default auth(...)` 在 edge 会 `TypeError: xx is not a function`。我们改成 `app/admin/layout.tsx` 调 `await auth()` 后 `redirect("/login")`,server actions 也独立 re-check session(双重防护)。**不要**回退到 middleware.ts。
+- **Upstash env 用集成提供的名字** `KV_REST_API_URL` / `KV_REST_API_TOKEN`(Vercel Marketplace 注入的)。我们的代码就读这两个;不要重命名为 `UPSTASH_REDIS_REST_URL`。
+- **`vercel env pull` 会把 sensitive 变量(集成注入的、env add 加的 secret)拉成空字符串**。本地跑 `drizzle-kit migrate` 时要从 Neon 控制台拿连接串内联传入:`DATABASE_URL='...' bunx drizzle-kit migrate`,不能依赖 pull。
+- 提交端点(`/api/submit` + `/api/submit/batch`)是公开的,带 IP 限流(`getSubmitRatelimit()`,20/分钟)+ CORS `*` + zod 校验 + 按 `user_id` UPSERT 去重。`createMany` 用 `onConflictDoUpdate` 累加票数。
+- 通过审核时**先 commit GitHub 再改 Neon**(`commitApprovedEntries` → `markApproved`):若 commit 失败 Neon 留 `pending`,避免漂移。同一 user_id 重复通过不重复追加(json 层 `upsertBlocklistEntry` + DB 唯一键)。批量通过用**单次读 + 单次 commit**(`commitApprovedEntries` 接收数组)。
 
-无自动化测试。验证方式是手动安装到 Tampermonkey 后在 x.com 上观察右下角控制面板。修改 JSON 后可用 `python3 -m json.tool blocklist/blocklist.json` 检查语法是否合法。
+## 部署 / Vercel 设置
+
+- **Vercel 项目**:`x-chinese-spam-blocker` under `richardphoenixs-projects`,**Root Directory = `web`**(必须,否则 git auto-build 找不到 package.json)。
+- **生产域名**:`x-chinese-spam-blocker.vercel.app`。**GitHub OAuth App 的 callback URL** = `https://x-chinese-spam-blocker.vercel.app/api/auth/callback/github`(scope:`read:user public_repo`)。
+- **git auto-deploy** 已开:push 到 `main` 触发自动构建部署。CLI `vercel deploy --cwd web` 会因 Root Directory 设置导致路径变 `web/web`,**改用 git push 触发部署**(以前手动 CLI 部署只是 Root Directory 设之前的临时手段)。
+- **Ignored Build Step**:Settings → Git → 设为 `git diff --quiet HEAD^ HEAD ./` — 只在 `web/` 有变化时构建,审核通过产生的 blocklist.json commit 不会触发(它在 web/ 外)。
+- **环境变量**:见 `web/.env.example`。集成自动注入的不用手动加。
+
+## 编辑约束
+
+- userscript 与 `blocklist/` 改动:push 到 `main` 才对线上用户生效,raw CDN ~5 分钟。
+- `web/` 改动:push 后 git 自动部署,~30s 上线。
+- 编辑 `blocklist.json` 后用 `python3 -m json.tool blocklist/blocklist.json` 校验。
+- `web/` 改动跑 `cd web && bun run test && bunx tsc --noEmit` 自检。
+
+## 测试
+
+- `web/lib/__tests__/*` 有 vitest 单测覆盖纯函数(env / validate / blocklist / ratelimit/clientIp / smoke)。`cd web && bun run test`。
+- DB/网络相关只做编译验证(`bun run build`),没集成测试。
+- userscript 无自动化测试,靠手动安装后在 x.com 观察。
