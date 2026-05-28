@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.12.1
+// @version      0.13.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -91,6 +91,10 @@
   // Local manual blocklist (persistent) - accounts the user hid by hand via the per-tweet button.
   // Map: screen_name (lowercased) -> user_id (string) | null. user_id lets us submit them later.
   let localBlocklist = new Map();
+
+  // Persistent record of accounts already blocked via this script, so bulk-block
+  // skips them on later runs (X's block API is idempotent but each call costs 10s).
+  let blockedScreenNames = new Set(); // screen_names (lowercased)
 
   // ===================== UTILITIES =====================
 
@@ -580,6 +584,37 @@
     log(`Removed @${screenName} from local blocklist`);
   }
 
+  // ===================== ALREADY-BLOCKED RECORD =====================
+  // Persistent set of accounts already blocked via bulk-block, to skip on re-runs.
+
+  async function loadBlockedScreenNames() {
+    try {
+      blockedScreenNames = new Set(await GM_getValue('blocked_screen_names', []));
+      log(`Loaded ${blockedScreenNames.size} already-blocked accounts`);
+    } catch (e) {
+      blockedScreenNames = new Set();
+    }
+  }
+
+  async function saveBlockedScreenNames() {
+    await GM_setValue('blocked_screen_names', Array.from(blockedScreenNames));
+  }
+
+  function isAlreadyBlocked(screenName) {
+    return !!screenName && blockedScreenNames.has(String(screenName).toLowerCase());
+  }
+
+  async function markBlocked(screenName) {
+    if (!screenName) return;
+    blockedScreenNames.add(String(screenName).toLowerCase());
+    await saveBlockedScreenNames();
+  }
+
+  async function removeBlockedRecord(screenName) {
+    blockedScreenNames.delete(String(screenName).toLowerCase());
+    await saveBlockedScreenNames();
+  }
+
   // ===================== LIST VIEWER MODAL =====================
 
   function closeListModal() {
@@ -687,6 +722,36 @@
     });
   }
 
+  function openBlockedModal() {
+    openListModal(`已拉黑（${blockedScreenNames.size}）`, (box) => {
+      if (blockedScreenNames.size === 0) {
+        const p = document.createElement('div');
+        p.textContent = '（空）通过「从维护者黑名单拉黑」成功拉黑的账号会记在这里，下次拉黑自动跳过。';
+        p.style.color = '#8899a6';
+        box.appendChild(p);
+        return;
+      }
+      Array.from(blockedScreenNames).sort().forEach((sn) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2f3336;';
+        const name = document.createElement('span');
+        name.textContent = '@' + sn;
+        const rm = document.createElement('span');
+        rm.textContent = '移除记录';
+        rm.style.cssText = 'color:#1d9bf0;cursor:pointer;';
+        rm.title = '仅移除"已拉黑"记录（不会解除拉黑）；移除后下次会重新拉黑该账号';
+        rm.onclick = async () => {
+          await removeBlockedRecord(sn);
+          row.remove();
+          updatePanelCount();
+        };
+        row.appendChild(name);
+        row.appendChild(rm);
+        box.appendChild(row);
+      });
+    });
+  }
+
   function openHiddenModal() {
     openListModal(`本次隐藏（${hiddenItems.length}）— 复查是否误杀`, (box) => {
       if (hiddenItems.length === 0) {
@@ -776,14 +841,16 @@
       return;
     }
 
-    // Block by screen_name (reliable), skipping anything in the local whitelist.
-    const names = approvedBlocklistEntries
+    // Block by screen_name (reliable), skipping whitelist + already-blocked accounts.
+    const eligible = approvedBlocklistEntries
       .map(e => e.screen_name)
       .filter(Boolean)
       .filter(sn => !isWhitelisted(sn));
+    const alreadyBlockedCount = eligible.filter(sn => isAlreadyBlocked(sn)).length;
+    const names = eligible.filter(sn => !isAlreadyBlocked(sn));
 
     if (names.length === 0) {
-      alert('当前没有可拉黑的维护者黑名单账号（或都在你的本地白名单里）');
+      alert(`没有需要拉黑的新账号（黑名单 ${eligible.length} 个已全部拉过或在白名单里）。`);
       return;
     }
 
@@ -793,7 +860,7 @@
     const moreText = toBlock.length > 15 ? `\n... 还有 ${toBlock.length - 15} 个` : '';
 
     const msg = `即将从维护者黑名单中按 @句柄 拉黑以下账号（前15个预览）：\n\n${previewList}${moreText}\n\n` +
-      `总计：${toBlock.length} 个账号\n` +
+      `本次待拉：${toBlock.length} 个（已跳过 ${alreadyBlockedCount} 个已拉黑）\n` +
       `间隔：10秒/个\n\n` +
       `确认后开始执行（可中途暂停/取消）。`;
 
@@ -825,6 +892,8 @@
         await blockByScreenName(item.screenName);
         blockedThisSession++;
         consecutiveFails = 0;
+        await markBlocked(item.screenName);
+        updatePanelCount();
         await sleep(CONFIG.BLOCK_DELAY_MS);
       } catch (err) {
         consecutiveFails++;
@@ -1074,7 +1143,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.12.1</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.13.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
@@ -1093,6 +1162,7 @@
         <span id="x-spam-hidden-open" style="cursor:pointer;text-decoration:underline;">本次隐藏：<span id="x-spam-hidden">0</span></span>
         <span id="x-spam-whitelist-open" style="cursor:pointer;text-decoration:underline;">本地白名单：<span id="x-spam-whitelist">0</span></span>
         <span id="x-spam-localblock-open" style="cursor:pointer;text-decoration:underline;">本地隐藏：<span id="x-spam-localblock">0</span></span>
+        <span id="x-spam-blocked-open" style="cursor:pointer;text-decoration:underline;">已拉黑：<span id="x-spam-blocked">0</span></span>
       </div>
     `;
 
@@ -1132,6 +1202,7 @@
     document.getElementById('x-spam-whitelist-open').addEventListener('click', openWhitelistModal);
     document.getElementById('x-spam-hidden-open').addEventListener('click', openHiddenModal);
     document.getElementById('x-spam-localblock-open').addEventListener('click', openLocalBlocklistModal);
+    document.getElementById('x-spam-blocked-open').addEventListener('click', openBlockedModal);
 
     return panelEl;
   }
@@ -1165,6 +1236,9 @@
 
     const localBlockEl = document.getElementById('x-spam-localblock');
     if (localBlockEl) localBlockEl.textContent = localBlocklist.size;
+
+    const blockedEl = document.getElementById('x-spam-blocked');
+    if (blockedEl) blockedEl.textContent = blockedScreenNames.size;
   }
 
   // ===================== INIT =====================
@@ -1179,7 +1253,8 @@
       loadApprovedBlocklist(),
       loadRemoteKeywords(),
       loadLocalWhitelist(),
-      loadLocalBlocklist()
+      loadLocalBlocklist(),
+      loadBlockedScreenNames()
     ]);
 
     updatePanelCount();
