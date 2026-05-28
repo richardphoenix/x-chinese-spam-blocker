@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.10.0
+// @version      0.10.1
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -351,16 +351,22 @@
       showBtn.textContent = expanded ? '显示' : '收起';
     };
 
-    // Shared false-positive recovery: whitelist (if possible) + reveal + drop from session list.
-    // Reused by the in-place bar button and the "本次隐藏" reviewer modal.
     const record = { screenName, displayName, tweetText, userId: info ? info.userId : null, score: info ? calculateSpamScore(info) : 0, element };
-    record.recover = async () => {
-      if (screenName) await addToLocalWhitelist(screenName);
+    // Plain un-collapse: restore content, drop the bar + the hidden flag (so it
+    // won't be treated as hidden), remove from the session list. No whitelisting.
+    record.reveal = () => {
       originalChildren.forEach(c => { c.style.display = ''; });
       bar.remove();
+      delete element.dataset.spamHidden;
       const i = hiddenItems.indexOf(record);
       if (i >= 0) hiddenItems.splice(i, 1);
       updateHiddenCount();
+    };
+    // False-positive recovery: reveal + add to whitelist (never hide again).
+    // Reused by the in-place bar button and the "本次隐藏" reviewer modal.
+    record.recover = async () => {
+      if (screenName) await addToLocalWhitelist(screenName);
+      record.reveal();
       updatePanelCount();
     };
 
@@ -553,8 +559,13 @@
   }
 
   async function removeFromLocalBlocklist(screenName) {
-    localBlocklist.delete(String(screenName).toLowerCase());
+    const lc = String(screenName).toLowerCase();
+    localBlocklist.delete(lc);
     await saveLocalBlocklist();
+    // Un-collapse this account's tweets that are still on the page (no refresh needed).
+    hiddenItems.slice().forEach((rec) => {
+      if (rec.screenName && rec.screenName.toLowerCase() === lc && rec.reveal) rec.reveal();
+    });
     log(`Removed @${screenName} from local blocklist`);
   }
 
@@ -641,7 +652,7 @@
         const rm = document.createElement('span');
         rm.textContent = '移除';
         rm.style.cssText = 'color:#1d9bf0;cursor:pointer;';
-        rm.title = '移除后该账号不再被本地隐藏（已折叠的需刷新页面）';
+        rm.title = '移除后该账号不再被本地隐藏，页面上已折叠的会立即恢复显示';
         rm.onclick = async () => {
           await removeFromLocalBlocklist(sn);
           row.remove();
@@ -998,7 +1009,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.10.0</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.10.1</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
