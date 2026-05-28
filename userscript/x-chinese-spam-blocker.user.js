@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.9.5
+// @version      0.10.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -87,6 +87,9 @@
 
   // Local whitelist (persistent via GM storage) - highest priority to prevent false positives
   let localWhitelist = new Set(); // screen_names (lowercased) stored locally by the user
+
+  // Local manual blocklist (persistent) - accounts the user hid by hand via the per-tweet button
+  let localBlocklist = new Set(); // screen_names (lowercased)
 
   // ===================== UTILITIES =====================
 
@@ -195,17 +198,10 @@
       }
     }
 
-    // 7. Emoji-garbage spam: several emoji + isolated single letters, no real
-    //    words (e.g. "🙂x ❤️ 23😀 🌖 🕺H"). 同城上门 escort family that uses
-    //    real-looking western names — the spam marker is only in the avatar image,
-    //    so name/keyword rules miss it. (emojiCount comes from <img> count.)
-    if (tweetText) {
-      const realWords = tweetText.match(/[A-Za-z]{3,}|[一-鿿]{2,}/g) || [];
-      const strayLetters = (tweetText.match(/(?:^|[^A-Za-z])[A-Za-z](?:[^A-Za-z]|$)/g) || []).length;
-      if (realWords.length === 0 && strayLetters >= 1 && (userInfo.emojiCount || 0) >= 3) {
-        score += 40;
-      }
-    }
+    // NOTE: emoji-garbage tweets (real-looking name + 同城上门 avatar + 散落 emoji
+    // + 孤立单字母) are too easily confused with real heavy-emoji users, so they are
+    // NOT auto-hidden. Use the per-tweet manual 「隐藏」 button instead (see
+    // addManualHideButton) — the human is the judge for that ambiguous family.
 
     return Math.min(score, 100);
   }
@@ -292,6 +288,11 @@
     // 0. Local whitelist has highest priority (never hide or block these)
     if (isWhitelisted(userInfo.screenName)) {
       return false;
+    }
+
+    // 0.5 Manually hidden by the user (per-tweet 隐藏 button) — sticks across loads
+    if (userInfo.screenName && localBlocklist.has(userInfo.screenName.toLowerCase())) {
+      return true;
     }
 
     // 1. Exact match from MAINTAINER-APPROVED blocklist (highest confidence)
@@ -392,10 +393,11 @@
     document.querySelectorAll('article[data-testid="tweet"]:not([data-spam-scanned])').forEach(article => {
       article.dataset.spamScanned = 'true';
       const info = extractUserInfo(article);
+      const container = article.closest('div[data-testid="cellInnerDiv"]') || article;
       if (shouldHide(info)) {
-        hideElement(article.closest('div[data-testid="cellInnerDiv"]') || article);
-        // Optional debug log
-        // console.log('[SpamBlocker] Hidden post with score', calculateSpamScore(info), info);
+        hideElement(container);
+      } else if (info && info.screenName) {
+        addManualHideButton(container, info.screenName);
       }
     });
 
@@ -405,8 +407,32 @@
       const info = extractUserInfo(cell);
       if (shouldHide(info)) {
         hideElement(cell);
+      } else if (info && info.screenName) {
+        addManualHideButton(cell, info.screenName);
       }
     });
+  }
+
+  // Inject a subtle per-tweet manual hide button (revealed on hover). Lets the
+  // user catch spam that's too ambiguous for the heuristics (e.g. real-looking
+  // name + 同城上门 avatar + emoji garbage) without auto-hiding emoji-loving users.
+  function addManualHideButton(container, screenName) {
+    if (!container || container.dataset.spamHost === 'true' || container.dataset.spamHidden === 'true') return;
+    container.dataset.spamHost = 'true';
+    if (!container.style.position) container.style.position = 'relative';
+
+    const btn = document.createElement('div');
+    btn.className = 'x-spam-manual-hide';
+    btn.textContent = '🚫 隐藏';
+    btn.title = '手动隐藏该账号（加入本地隐藏，以后自动折叠）';
+    btn.onclick = async (e) => {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      await addToLocalBlocklist(screenName);
+      hideElement(container);
+      updatePanelCount();
+    };
+    container.appendChild(btn);
   }
 
   function startObserver() {
@@ -501,6 +527,37 @@
     log(`Removed @${screenName} from local whitelist`);
   }
 
+  // ===================== LOCAL MANUAL BLOCKLIST =====================
+  // Accounts the user hid by hand (per-tweet 隐藏 button). Persisted by screen_name.
+
+  async function loadLocalBlocklist() {
+    try {
+      const saved = await GM_getValue('local_blocklist', []);
+      localBlocklist = new Set(saved);
+      log(`Loaded ${localBlocklist.size} accounts from local blocklist`);
+    } catch (e) {
+      localBlocklist = new Set();
+    }
+  }
+
+  async function saveLocalBlocklist() {
+    await GM_setValue('local_blocklist', Array.from(localBlocklist));
+  }
+
+  async function addToLocalBlocklist(screenName) {
+    if (!screenName) return false;
+    localBlocklist.add(String(screenName).toLowerCase());
+    await saveLocalBlocklist();
+    log(`Added @${screenName} to local blocklist`);
+    return true;
+  }
+
+  async function removeFromLocalBlocklist(screenName) {
+    localBlocklist.delete(String(screenName).toLowerCase());
+    await saveLocalBlocklist();
+    log(`Removed @${screenName} from local blocklist`);
+  }
+
   // ===================== LIST VIEWER MODAL =====================
 
   function closeListModal() {
@@ -557,6 +614,36 @@
         rm.style.cssText = 'color:#f4212e;cursor:pointer;';
         rm.onclick = async () => {
           await removeFromLocalWhitelist(sn);
+          row.remove();
+          updatePanelCount();
+        };
+        row.appendChild(name);
+        row.appendChild(rm);
+        box.appendChild(row);
+      });
+    });
+  }
+
+  function openLocalBlocklistModal() {
+    openListModal(`本地隐藏（${localBlocklist.size}）`, (box) => {
+      if (localBlocklist.size === 0) {
+        const p = document.createElement('div');
+        p.textContent = '（空）你用每条推文上的「🚫 隐藏」按钮手动隐藏的账号会出现在这里。';
+        p.style.color = '#8899a6';
+        box.appendChild(p);
+        return;
+      }
+      Array.from(localBlocklist).sort().forEach((sn) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2f3336;';
+        const name = document.createElement('span');
+        name.textContent = '@' + sn;
+        const rm = document.createElement('span');
+        rm.textContent = '移除';
+        rm.style.cssText = 'color:#1d9bf0;cursor:pointer;';
+        rm.title = '移除后该账号不再被本地隐藏（已折叠的需刷新页面）';
+        rm.onclick = async () => {
+          await removeFromLocalBlocklist(sn);
           row.remove();
           updatePanelCount();
         };
@@ -835,6 +922,29 @@
     if (panelEl) return panelEl;
 
     GM_addStyle(`
+      .x-spam-manual-hide {
+        position: absolute;
+        top: 6px;
+        right: 48px;
+        z-index: 5;
+        font-size: 11px;
+        color: #8899a6;
+        background: rgba(0,0,0,0.55);
+        border: 1px solid #38444d;
+        border-radius: 9999px;
+        padding: 2px 8px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      [data-spam-host="true"]:hover .x-spam-manual-hide {
+        opacity: 1;
+      }
+      .x-spam-manual-hide:hover {
+        color: #fff;
+        background: #f4212e;
+        border-color: #f4212e;
+      }
       #x-spam-panel {
         position: fixed;
         bottom: 24px;
@@ -888,7 +998,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.9.5</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.10.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
@@ -906,6 +1016,7 @@
         <span id="x-spam-blocklist-open" style="cursor:pointer;text-decoration:underline;">正式黑名单：<span id="x-spam-count">0</span></span>
         <span id="x-spam-hidden-open" style="cursor:pointer;text-decoration:underline;">本次隐藏：<span id="x-spam-hidden">0</span></span>
         <span id="x-spam-whitelist-open" style="cursor:pointer;text-decoration:underline;">本地白名单：<span id="x-spam-whitelist">0</span></span>
+        <span id="x-spam-localblock-open" style="cursor:pointer;text-decoration:underline;">本地隐藏：<span id="x-spam-localblock">0</span></span>
       </div>
     `;
 
@@ -944,6 +1055,7 @@
     document.getElementById('x-spam-blocklist-open').addEventListener('click', openBlocklistModal);
     document.getElementById('x-spam-whitelist-open').addEventListener('click', openWhitelistModal);
     document.getElementById('x-spam-hidden-open').addEventListener('click', openHiddenModal);
+    document.getElementById('x-spam-localblock-open').addEventListener('click', openLocalBlocklistModal);
 
     return panelEl;
   }
@@ -974,6 +1086,9 @@
 
     const whitelistEl = document.getElementById('x-spam-whitelist');
     if (whitelistEl) whitelistEl.textContent = localWhitelist.size;
+
+    const localBlockEl = document.getElementById('x-spam-localblock');
+    if (localBlockEl) localBlockEl.textContent = localBlocklist.size;
   }
 
   // ===================== INIT =====================
@@ -983,11 +1098,12 @@
 
     createPanel();
 
-    // Load remote data + local whitelist in parallel
+    // Load remote data + local whitelist/blocklist in parallel
     await Promise.all([
       loadApprovedBlocklist(),
       loadRemoteKeywords(),
-      loadLocalWhitelist()
+      loadLocalWhitelist(),
+      loadLocalBlocklist()
     ]);
 
     updatePanelCount();
