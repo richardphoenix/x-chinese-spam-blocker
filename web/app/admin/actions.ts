@@ -9,7 +9,12 @@ import {
   markRejected,
   markRejectedMany,
 } from "@/lib/db/submissions";
-import { commitApprovedEntry, commitApprovedEntries, saveKeywords } from "@/lib/github";
+import {
+  commitApprovedEntry,
+  commitApprovedEntries,
+  saveKeywords,
+  removeBlocklistEntry,
+} from "@/lib/github";
 
 const DEFAULT_CATEGORY = "寻固炮";
 const DEFAULT_REASON = "寻固炮 spam / 引流诈骗";
@@ -98,4 +103,13 @@ export async function saveKeywordsAction(content: string) {
   if (!session || !accessToken) throw new Error("未授权");
   await saveKeywords(accessToken, content);
   revalidatePath("/admin/keywords");
+}
+
+// Remove a (false-positive) account from the blocklist.
+export async function removeFromBlocklistAction(screenName: string) {
+  const session = await auth();
+  const accessToken = (session as { accessToken?: string } | null)?.accessToken;
+  if (!session || !accessToken) throw new Error("未授权");
+  await removeBlocklistEntry(accessToken, screenName);
+  revalidatePath("/admin/blocklist");
 }

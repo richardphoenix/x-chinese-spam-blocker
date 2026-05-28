@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const tabs = [
   { href: "/admin", label: "审核队列" },
+  { href: "/admin/blocklist", label: "黑名单" },
   { href: "/admin/keywords", label: "关键词" },
 ];
 

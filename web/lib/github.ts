@@ -130,3 +130,35 @@ export async function commitApprovedEntries(
   });
   return { added };
 }
+
+// Full current blocklist (for the admin manager). Reads via API → always fresh.
+export async function listBlocklistEntries(accessToken: string): Promise<BlocklistEntry[]> {
+  const octokit = new Octokit({ auth: accessToken });
+  const { list } = await readBlocklist(octokit);
+  return list;
+}
+
+// Remove an entry by screen_name (case-insensitive) and commit. For un-doing
+// a false-positive add. Returns whether anything was removed.
+export async function removeBlocklistEntry(
+  accessToken: string,
+  screenName: string,
+): Promise<{ removed: boolean }> {
+  const octokit = new Octokit({ auth: accessToken });
+  const { list, sha } = await readBlocklist(octokit);
+  const key = String(screenName || "").toLowerCase();
+  const next = list.filter((e) => String(e.screen_name || "").toLowerCase() !== key);
+  if (next.length === list.length) return { removed: false };
+
+  const nextContent = JSON.stringify(next, null, 2) + "\n";
+  await octokit.rest.repos.createOrUpdateFileContents({
+    owner: env.GITHUB_REPO_OWNER,
+    repo: env.GITHUB_REPO_NAME,
+    path: env.GITHUB_BLOCKLIST_PATH,
+    branch: env.GITHUB_BRANCH,
+    message: `blocklist: remove ${screenName}`,
+    content: Buffer.from(nextContent, "utf-8").toString("base64"),
+    sha,
+  });
+  return { removed: true };
+}
