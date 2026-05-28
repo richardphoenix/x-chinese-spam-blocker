@@ -6,8 +6,9 @@ const schema = z.object({
   AUTH_GITHUB_ID: z.string().min(1),
   AUTH_GITHUB_SECRET: z.string().min(1),
   ADMIN_GITHUB_LOGIN: z.string().min(1),
-  UPSTASH_REDIS_REST_URL: z.string().min(1),
-  UPSTASH_REDIS_REST_TOKEN: z.string().min(1),
+  // Provided by the Vercel Upstash/KV Marketplace integration.
+  KV_REST_API_URL: z.string().min(1),
+  KV_REST_API_TOKEN: z.string().min(1),
   GITHUB_REPO_OWNER: z.string().min(1),
   GITHUB_REPO_NAME: z.string().min(1),
   GITHUB_BLOCKLIST_PATH: z.string().min(1),
