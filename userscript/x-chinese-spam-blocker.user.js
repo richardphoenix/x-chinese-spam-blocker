@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.11.0
+// @version      0.11.1
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -487,10 +487,10 @@
           if (res.status >= 200 && res.status < 300) {
             resolve();
           } else {
-            reject(new Error(`Block failed: ${res.status}`));
+            reject(new Error(`${res.status} ${String(res.responseText || '').slice(0, 120)}`));
           }
         },
-        onerror: reject
+        onerror: () => reject(new Error('网络错误'))
       });
     });
   }
@@ -812,35 +812,41 @@
   }
 
   async function processBlockingQueue() {
-    const total = blockingQueue.length + blockedThisSession;
+    let attempted = 0;
+    let consecutiveFails = 0;
+    let lastError = '';
 
     while (blockingQueue.length > 0 && isBlockingActive && !blockingPaused) {
       const item = blockingQueue.shift();
+      attempted++;
       const remaining = blockingQueue.length;
-      const done = blockedThisSession;
 
-      // Show nice progress
-      updatePanelStatus(`拉黑中 ${done + 1}/${total}（剩余 ${remaining}） - 10秒间隔`);
-
-      // Double-check whitelist right before blocking
-      if (isWhitelisted(item.userId)) {
-        log(`Skipped whitelisted account: ${item.userId}`);
-        await sleep(300);
-        continue;
-      }
+      // Honest progress: attempted / succeeded / remaining (failures don't inflate success).
+      updatePanelStatus(`拉黑中 第 ${attempted} 个（成功 ${blockedThisSession}，剩余 ${remaining}） - 10秒间隔`);
 
       try {
         await blockUserById(item.userId);
         blockedThisSession++;
+        consecutiveFails = 0;
         await sleep(CONFIG.BLOCK_DELAY_MS);
       } catch (err) {
-        console.error('[Block Queue] Failed to block', item.userId, err);
+        consecutiveFails++;
+        lastError = String((err && err.message) || err);
+        console.error('[Block Queue] Failed to block', item.userId, lastError);
 
-        if (String(err).includes('429') || String(err.message || '').includes('limit')) {
+        if (lastError.includes('429') || lastError.includes('limit')) {
           updatePanelStatus('触发 X 频率限制，自动暂停 30 分钟...');
           await sleep(30 * 60 * 1000);
+          consecutiveFails = 0;
+        } else if (consecutiveFails >= 5) {
+          // Everything is failing — likely the block endpoint changed / auth invalid.
+          // Abort instead of churning 10s per item for the whole queue.
+          isBlockingActive = false;
+          updatePanelStatus(`拉黑疑似失效，已中止（成功 ${blockedThisSession}，错误：${lastError}）`);
+          setTimeout(() => updatePanelStatus('就绪'), 12000);
+          return;
         } else {
-          await sleep(6000);
+          await sleep(4000);
         }
       }
     }
@@ -1074,7 +1080,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.0</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.1</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
