@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.6.3
+// @version      0.7.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -72,6 +72,7 @@
   // ===================== STATE =====================
   let approvedBlocklistUserIds = new Set();   // Only accounts from the curated blocklist (safe for bulk blocking)
   let approvedBlocklistScreenNames = new Set();
+  let approvedBlocklistEntries = [];          // Full entries (name/category/reason) for the viewer
 
   let activeKeywords = [];               // Loaded from remote spam-keywords.txt + fallback
   let hiddenThisSession = 0;
@@ -190,7 +191,8 @@
                 if (entry.user_id) approvedBlocklistUserIds.add(String(entry.user_id));
                 if (entry.screen_name) approvedBlocklistScreenNames.add(entry.screen_name.toLowerCase());
               });
-              log(`[Approved Blocklist] Loaded ${approvedBlocklistUserIds.size} accounts`);
+              approvedBlocklistEntries = data;
+              log(`[Approved Blocklist] Loaded ${approvedBlocklistEntries.length} accounts`);
             }
           } catch (e) {
             log('Failed to parse approved blocklist', e);
@@ -436,6 +438,105 @@
     return localWhitelist.has(String(screenName).toLowerCase());
   }
 
+  async function removeFromLocalWhitelist(screenName) {
+    localWhitelist.delete(String(screenName).toLowerCase());
+    await saveLocalWhitelist();
+    log(`Removed @${screenName} from local whitelist`);
+  }
+
+  // ===================== LIST VIEWER MODAL =====================
+
+  function closeListModal() {
+    const m = document.getElementById('x-spam-modal');
+    if (m) m.remove();
+  }
+
+  // Generic modal. buildBody(box) appends rows; all text via textContent (no HTML injection).
+  function openListModal(title, buildBody) {
+    closeListModal();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'x-spam-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000000;display:flex;align-items:center;justify-content:center;';
+    overlay.onclick = (e) => { if (e.target === overlay) closeListModal(); };
+
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#15202b;color:#fff;border:1px solid #38444d;border-radius:14px;padding:16px;min-width:300px;max-width:440px;max-height:70vh;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;';
+
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
+    const h = document.createElement('div');
+    h.textContent = title;
+    h.style.cssText = 'font-weight:700;color:#1d9bf0;';
+    const close = document.createElement('span');
+    close.textContent = '✕';
+    close.style.cssText = 'cursor:pointer;color:#8899a6;padding:0 4px;';
+    close.onclick = closeListModal;
+    head.appendChild(h);
+    head.appendChild(close);
+    box.appendChild(head);
+
+    buildBody(box);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+
+  function openWhitelistModal() {
+    openListModal(`本地白名单（${localWhitelist.size}）`, (box) => {
+      if (localWhitelist.size === 0) {
+        const p = document.createElement('div');
+        p.textContent = '（空）你点「误杀→加白名单」加入的账号会出现在这里。';
+        p.style.color = '#8899a6';
+        box.appendChild(p);
+        return;
+      }
+      Array.from(localWhitelist).sort().forEach((sn) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2f3336;';
+        const name = document.createElement('span');
+        name.textContent = '@' + sn;
+        const rm = document.createElement('span');
+        rm.textContent = '移除';
+        rm.style.cssText = 'color:#f4212e;cursor:pointer;';
+        rm.onclick = async () => {
+          await removeFromLocalWhitelist(sn);
+          row.remove();
+          updatePanelCount();
+        };
+        row.appendChild(name);
+        row.appendChild(rm);
+        box.appendChild(row);
+      });
+    });
+  }
+
+  function openBlocklistModal() {
+    openListModal(`正式黑名单（${approvedBlocklistEntries.length}）`, (box) => {
+      if (approvedBlocklistEntries.length === 0) {
+        const p = document.createElement('div');
+        p.textContent = '（空 / 未加载）维护者审核通过的账号会出现在这里。';
+        p.style.color = '#8899a6';
+        box.appendChild(p);
+        return;
+      }
+      approvedBlocklistEntries.forEach((e) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:6px 0;border-bottom:1px solid #2f3336;';
+        const line1 = document.createElement('div');
+        line1.textContent = (e.name || '(无名)') + (e.screen_name ? '  @' + e.screen_name : '');
+        const meta = [e.category, e.reason].filter(Boolean).join(' · ');
+        row.appendChild(line1);
+        if (meta) {
+          const line2 = document.createElement('div');
+          line2.style.cssText = 'color:#8899a6;font-size:11px;margin-top:2px;';
+          line2.textContent = meta;
+          row.appendChild(line2);
+        }
+        box.appendChild(row);
+      });
+    });
+  }
+
   // ===================== NEW ADVANCED BLOCKING SYSTEM =====================
 
   /**
@@ -662,7 +763,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.6.3</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.7.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
@@ -677,9 +778,9 @@
       </div>
 
       <div style="margin-top:8px;font-size:11px;color:#8899a6; display:flex; gap:12px; flex-wrap: wrap;">
-        <span>正式黑名单：<span id="x-spam-count">0</span></span>
+        <span id="x-spam-blocklist-open" style="cursor:pointer;text-decoration:underline;">正式黑名单：<span id="x-spam-count">0</span></span>
         <span>本次隐藏：<span id="x-spam-hidden">0</span></span>
-        <span>本地白名单：<span id="x-spam-whitelist">0</span></span>
+        <span id="x-spam-whitelist-open" style="cursor:pointer;text-decoration:underline;">本地白名单：<span id="x-spam-whitelist">0</span></span>
       </div>
     `;
 
@@ -714,6 +815,10 @@
     // Community submission button (opens GitHub issue for review)
     document.getElementById('x-spam-submit').addEventListener('click', submitCurrentSpamToDatabase);
 
+    // List viewers
+    document.getElementById('x-spam-blocklist-open').addEventListener('click', openBlocklistModal);
+    document.getElementById('x-spam-whitelist-open').addEventListener('click', openWhitelistModal);
+
     return panelEl;
   }
 
@@ -739,7 +844,7 @@
 
   function updatePanelCount() {
     const countEl = document.getElementById('x-spam-count');
-    if (countEl) countEl.textContent = approvedBlocklistUserIds.size + approvedBlocklistScreenNames.size;
+    if (countEl) countEl.textContent = approvedBlocklistEntries.length;
 
     const whitelistEl = document.getElementById('x-spam-whitelist');
     if (whitelistEl) whitelistEl.textContent = localWhitelist.size;
