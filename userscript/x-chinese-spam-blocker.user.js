@@ -2,7 +2,7 @@
 // @name         X 中文 Spam 拦截器（寻固炮专用）
 // @name:zh-CN   X 中文 Spam 拦截器（寻固炮专用）
 // @namespace    https://github.com/richardphoenix/x-chinese-spam-blocker
-// @version      0.10.1
+// @version      0.11.0
 // @updateURL    https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @downloadURL  https://raw.githubusercontent.com/richardphoenix/x-chinese-spam-blocker/main/userscript/x-chinese-spam-blocker.user.js
 // @description  自动隐藏并可批量拉黑中文 X 上的“寻固炮”等垃圾账号。支持远程黑名单订阅 + 实时时间线过滤。
@@ -88,8 +88,9 @@
   // Local whitelist (persistent via GM storage) - highest priority to prevent false positives
   let localWhitelist = new Set(); // screen_names (lowercased) stored locally by the user
 
-  // Local manual blocklist (persistent) - accounts the user hid by hand via the per-tweet button
-  let localBlocklist = new Set(); // screen_names (lowercased)
+  // Local manual blocklist (persistent) - accounts the user hid by hand via the per-tweet button.
+  // Map: screen_name (lowercased) -> user_id (string) | null. user_id lets us submit them later.
+  let localBlocklist = new Map();
 
   // ===================== UTILITIES =====================
 
@@ -403,7 +404,7 @@
       if (shouldHide(info)) {
         hideElement(container);
       } else if (info && info.screenName) {
-        addManualHideButton(container, info.screenName);
+        addManualHideButton(container, info.screenName, info.userId);
       }
     });
 
@@ -414,7 +415,7 @@
       if (shouldHide(info)) {
         hideElement(cell);
       } else if (info && info.screenName) {
-        addManualHideButton(cell, info.screenName);
+        addManualHideButton(cell, info.screenName, info.userId);
       }
     });
   }
@@ -422,7 +423,7 @@
   // Inject a subtle per-tweet manual hide button (revealed on hover). Lets the
   // user catch spam that's too ambiguous for the heuristics (e.g. real-looking
   // name + 同城上门 avatar + emoji garbage) without auto-hiding emoji-loving users.
-  function addManualHideButton(container, screenName) {
+  function addManualHideButton(container, screenName, userId) {
     if (!container || container.dataset.spamHost === 'true' || container.dataset.spamHidden === 'true') return;
     container.dataset.spamHost = 'true';
     if (!container.style.position) container.style.position = 'relative';
@@ -434,7 +435,7 @@
     btn.onclick = async (e) => {
       e.stopImmediatePropagation();
       e.preventDefault();
-      await addToLocalBlocklist(screenName);
+      await addToLocalBlocklist(screenName, userId);
       hideElement(container);
       updatePanelCount();
     };
@@ -539,20 +540,24 @@
   async function loadLocalBlocklist() {
     try {
       const saved = await GM_getValue('local_blocklist', []);
-      localBlocklist = new Set(saved);
+      localBlocklist = new Map();
+      (saved || []).forEach((item) => {
+        if (typeof item === 'string') localBlocklist.set(item, null);       // legacy format (screen_name only)
+        else if (item && item.s) localBlocklist.set(item.s, item.u || null); // {s: screen_name, u: user_id}
+      });
       log(`Loaded ${localBlocklist.size} accounts from local blocklist`);
     } catch (e) {
-      localBlocklist = new Set();
+      localBlocklist = new Map();
     }
   }
 
   async function saveLocalBlocklist() {
-    await GM_setValue('local_blocklist', Array.from(localBlocklist));
+    await GM_setValue('local_blocklist', Array.from(localBlocklist, ([s, u]) => ({ s, u })));
   }
 
-  async function addToLocalBlocklist(screenName) {
+  async function addToLocalBlocklist(screenName, userId) {
     if (!screenName) return false;
-    localBlocklist.add(String(screenName).toLowerCase());
+    localBlocklist.set(String(screenName).toLowerCase(), userId ? String(userId) : null);
     await saveLocalBlocklist();
     log(`Added @${screenName} to local blocklist`);
     return true;
@@ -644,7 +649,21 @@
         box.appendChild(p);
         return;
       }
-      Array.from(localBlocklist).sort().forEach((sn) => {
+
+      // Submit the whole persistent list to the review queue (only entries that
+      // carry a user_id can be submitted; older screen-name-only entries are skipped).
+      const submittable = Array.from(localBlocklist.values()).filter(Boolean).length;
+      const submitBtn = document.createElement('button');
+      submitBtn.textContent = `提交 ${submittable} 个到审核队列`;
+      submitBtn.style.cssText = 'width:100%;margin-bottom:10px;background:#1d9bf0;color:#fff;border:none;border-radius:9999px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;';
+      submitBtn.disabled = submittable === 0;
+      submitBtn.onclick = () => {
+        closeListModal();
+        submitLocalBlocklist();
+      };
+      box.appendChild(submitBtn);
+
+      Array.from(localBlocklist.keys()).sort().forEach((sn) => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2f3336;';
         const name = document.createElement('span');
@@ -925,6 +944,52 @@
     });
   }
 
+  // Submit the persistent local blocklist (manually hidden accounts) to the review
+  // queue. Only entries that stored a user_id can be submitted.
+  function submitLocalBlocklist() {
+    const accounts = [];
+    let noId = 0;
+    localBlocklist.forEach((userId, sn) => {
+      if (!userId) { noId++; return; }
+      accounts.push({
+        user_id: String(userId),
+        screen_name: sn,
+        display_name: '',
+        tweet_text: '',
+        source_url: window.location.href,
+        detected_reasons: ['manual-hide'],
+        detected_score: 0,
+      });
+    });
+
+    if (accounts.length === 0) {
+      alert('本地隐藏里没有可提交的账号（缺 user_id，老数据只存了句柄）。');
+      return;
+    }
+
+    updatePanelStatus(`正在提交 ${accounts.length} 个本地隐藏账号...`);
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: CONFIG.SUBMIT_BATCH_API,
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ accounts }),
+      onload: (res) => {
+        try {
+          const d = JSON.parse(res.responseText);
+          const extra = noId ? `，跳过 ${noId}（无 ID）` : '';
+          updatePanelStatus(`提交完成：新增 ${d.created}，已存在 ${d.duplicate}${d.invalid ? `，无效 ${d.invalid}` : ''}${extra}`);
+        } catch {
+          updatePanelStatus(res.status >= 200 && res.status < 300 ? '提交完成' : `提交失败(${res.status})`);
+        }
+        setTimeout(() => updatePanelStatus('就绪'), 6000);
+      },
+      onerror: () => {
+        updatePanelStatus('提交失败，请稍后重试');
+        setTimeout(() => updatePanelStatus('就绪'), 5000);
+      },
+    });
+  }
+
   // ===================== UI PANEL =====================
 
   let panelEl = null;
@@ -1009,7 +1074,7 @@
     panelEl = document.createElement('div');
     panelEl.id = 'x-spam-panel';
     panelEl.innerHTML = `
-      <div class="title">🛡️ X 中文 Spam 拦截器 v0.10.1</div>
+      <div class="title">🛡️ X 中文 Spam 拦截器 v0.11.0</div>
       <div class="status" id="x-spam-status">正在加载维护者黑名单 + 检测规则...</div>
       
       <div class="row">
